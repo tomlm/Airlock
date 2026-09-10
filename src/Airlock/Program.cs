@@ -93,9 +93,12 @@ internal static class Program
             ReservedVerbs.Connect => await ConnectDesktopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Stop => await StopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
-            ReservedVerbs.Add => ConfigCommands.Add(Config, command.ProjectPath),
-            ReservedVerbs.Remove =>
-                ConfigCommands.Remove(Config, command.ProjectPath, await IsRunningAsync(cancellationToken).ConfigureAwait(false)),
+            ReservedVerbs.Add => ConfigCommands.Add(Config, command.ProjectPath, command.Arguments),
+            ReservedVerbs.Remove => ConfigCommands.Remove(
+                Config,
+                command.ProjectPath,
+                command.Arguments,
+                await IsRunningAsync(cancellationToken).ConfigureAwait(false)),
             ReservedVerbs.Tools => ConfigCommands.Tools(Config, command.Arguments),
             // No arguments after the verb means a shell: you have opened the airlock and stepped in.
             ReservedVerbs.Open =>

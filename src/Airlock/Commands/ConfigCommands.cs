@@ -12,11 +12,17 @@ namespace Airlock;
 /// </summary>
 internal static class ConfigCommands
 {
-    /// <summary>Registers a folder as an airlock without opening it.</summary>
-    internal static int Add(AirlockConfigStore store, string? requestedPath)
+    /// <summary>
+    /// Registers a folder as an airlock without opening it.
+    /// </summary>
+    /// <param name="target">
+    /// A folder, or nothing for the current directory. Takes precedence over <c>--project</c>.
+    /// </param>
+    internal static int Add(AirlockConfigStore store, string? projectOption, IReadOnlyList<string> args)
     {
         var config = store.LoadOrCreate();
-        var project = ProjectResolver.Resolve(requestedPath);
+        var target = Target(projectOption, args);
+        var project = ProjectResolver.Resolve(target);
 
         foreach (var warning in project.Warnings)
         {
@@ -51,26 +57,37 @@ internal static class ConfigCommands
     /// <summary>
     /// Unregisters an airlock so the next start leaves it out.
     /// </summary>
+    /// <param name="args">
+    /// An airlock name as <c>airlock list</c> shows it, or a folder, or nothing for the current
+    /// directory.
+    /// </param>
     /// <remarks>
     /// A running sandbox keeps it mounted: Windows Sandbox has no unshare, so the only way to
     /// withdraw write access from a live sandbox is to stop it.
     /// </remarks>
-    internal static int Remove(AirlockConfigStore store, string? requestedPath, bool sandboxRunning)
+    internal static int Remove(
+        AirlockConfigStore store,
+        string? projectOption,
+        IReadOnlyList<string> args,
+        bool sandboxRunning)
     {
         var config = store.LoadOrCreate();
-        var host = ResolveForRemoval(requestedPath);
-        var existing = config.FindByHost(host);
+        var target = Target(projectOption, args);
+        var existing = Find(config, target);
 
         if (existing is null)
         {
-            AnsiConsole.MarkupLineInterpolated($"[dim]{host} is not an airlock.[/]");
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]{target ?? Directory.GetCurrentDirectory()} is not an airlock.[/]");
+            AnsiConsole.MarkupLine("[dim]'airlock list' shows them; remove one by name or by folder.[/]");
+
             return (int)ExitCode.Ok;
         }
 
         config.Airlocks.Remove(existing);
         store.Save(config);
 
-        AnsiConsole.MarkupLineInterpolated($"Removed {existing.Host}");
+        AnsiConsole.MarkupLineInterpolated($"Removed {existing.Name} ({existing.Host})");
 
         if (sandboxRunning)
         {
@@ -80,6 +97,36 @@ internal static class ConfigCommands
         }
 
         return (int)ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// What the user meant to act on: the positional argument, else <c>--project</c>, else here.
+    /// </summary>
+    /// <remarks>
+    /// The argument wins because it is what someone types after reading <c>airlock list</c>. It was
+    /// previously ignored outright, so <c>airlock remove spikes</c> silently operated on the current
+    /// directory and reported that the current directory was not an airlock.
+    /// </remarks>
+    private static string? Target(string? projectOption, IReadOnlyList<string> args) =>
+        args.Count > 0 ? args[0] : projectOption;
+
+    /// <summary>
+    /// Finds an airlock by the name <c>list</c> shows, or failing that by folder.
+    /// </summary>
+    /// <remarks>
+    /// Name first, because that is the short thing on screen and cannot be confused with a relative
+    /// path that happens to exist.
+    /// </remarks>
+    private static AirlockDefinition? Find(AirlockConfig config, string? target)
+    {
+        if (!string.IsNullOrWhiteSpace(target) &&
+            config.Airlocks.FirstOrDefault(
+                a => a.Name.Equals(target, StringComparison.OrdinalIgnoreCase)) is { } byName)
+        {
+            return byName;
+        }
+
+        return config.FindByHost(ResolveForRemoval(target));
     }
 
     /// <summary>
