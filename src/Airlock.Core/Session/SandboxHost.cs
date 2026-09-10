@@ -358,6 +358,7 @@ public sealed class SandboxHost(
     }
 
     /// <summary>Destroys the sandbox and removes the key that went with it.</summary>
+    /// <returns>False when there is no sandbox Airlock can prove is its own.</returns>
     public async Task<bool> StopAsync(CancellationToken cancellationToken = default)
     {
         var state = await GetStateAsync(cancellationToken).ConfigureAwait(false);
@@ -367,12 +368,32 @@ public sealed class SandboxHost(
             return false;
         }
 
-        await _wsb.StopAsync(state.Id, cancellationToken).ConfigureAwait(false);
+        await ForceStopAsync(state.Id, cancellationToken).ConfigureAwait(false);
+
+        return true;
+    }
+
+    /// <summary>Every running sandbox, whether or not Airlock started it.</summary>
+    public Task<IReadOnlyList<string>> ListRunningAsync(CancellationToken cancellationToken = default) =>
+        _wsb.ListAsync(cancellationToken);
+
+    /// <summary>
+    /// Stops a sandbox by id without asking whether it is ours, and clears our own state either way.
+    /// </summary>
+    /// <remarks>
+    /// The escape hatch for the case where a sandbox really is ours but ownership can no longer be
+    /// proven - an interrupted run that removed the key while the VM survived. Without this, Airlock
+    /// refuses to start <i>and</i> refuses to stop, and the only way out is <c>wsb stop --id</c>.
+    /// Deciding to use it is the caller's, since the sandbox may belong to the user instead.
+    /// </remarks>
+    public async Task ForceStopAsync(string id, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+
+        await _wsb.StopAsync(id, cancellationToken).ConfigureAwait(false);
 
         _store.Clear();
         _layout.Delete();
-
-        return true;
     }
 
     /// <summary>Points a bare agent name at the staged binary; anything else runs off the guest PATH.</summary>

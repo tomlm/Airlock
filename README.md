@@ -13,10 +13,13 @@ Claude Code session running in `C:\work\MyProject` — in your own terminal, wit
 and scrollback. Run `airlock` from another project and it joins the same sandbox. `airlock stop`
 destroys the VM and everything installed in it.
 
-> **Status: in development.** Sessions work end to end and are covered by tests plus live spikes
-> against Windows Sandbox. `doctor`, `connect`, `tools` and the per-project `.airlock.json` layer are
-> not implemented yet. See [`spikes/FINDINGS.md`](spikes/FINDINGS.md) for what has been verified
-> against the real thing.
+> **Status: in development.** Sessions, `start`/`stop`/`list`/`connect` work end to end and are
+> covered by tests plus live spikes against Windows Sandbox. `doctor`, `tools` and the per-project
+> `.airlock.json` layer are not implemented yet. See [`spikes/FINDINGS.md`](spikes/FINDINGS.md) for
+> what has been verified against the real thing.
+>
+> Building currently needs a [CShell](https://github.com/tomlm/CShell) checkout beside this one:
+> Airlock uses `ExecAsync`, which is not in a released CShell yet. See **Building**.
 
 ## Why
 
@@ -51,6 +54,11 @@ airlock stop                     # destroys the VM and detaches everything
 `airlock start` brings the sandbox up with **no** folders attached, so you can pay the boot cost up
 front.
 
+If Airlock ever refuses to start *and* refuses to stop - which happens when a sandbox really was
+its own but the session key is gone, so ownership can no longer be proven - `airlock stop --force`
+is the way out. It names the sandbox and asks before destroying it, since it might be one you opened
+yourself.
+
 `airlock connect` opens the sandbox's own desktop window, which is useful for looking at what an
 agent did or working out why a sandbox came up wrong. Note that the window signs in as
 `WDAGUtilityAccount`, a different Windows account from the `airlock` user your agent sessions run
@@ -67,7 +75,7 @@ airlock <command...>       attach the current project and run a command in the s
 airlock shell              attach the current project and open an interactive shell
 airlock start              start the sandbox with no folders attached, and leave it running
 airlock list               show the sandbox and every folder currently attached
-airlock stop               destroy the sandbox and detach everything
+airlock stop [--force]     destroy the sandbox and detach everything
 airlock connect            open the sandbox desktop window (looking around, debugging)
 airlock doctor             check Sandbox, CmService, wsb.exe, toolchains
 airlock tools update       refresh the host-side tools folder
@@ -126,11 +134,22 @@ into the *same* session are just `airlock shell` in another tab.
 
 ## Building
 
+Airlock references CShell by project path while `Exec()`/`ExecAsync()` are unreleased, so clone the
+two side by side:
+
+```
+S:\src\Airlock
+S:\src\CShell
+```
+
 ```powershell
 dotnet build Airlock.slnx
 dotnet test  Airlock.slnx
 dotnet pack  src\Airlock -c Release
 ```
+
+Once a CShell containing `ExecAsync` ships, `src\Airlock.Core\Airlock.Core.csproj` should go back to
+a `PackageReference`; until then `dotnet pack` would resolve CShell to a version without it.
 
 ## License
 

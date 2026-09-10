@@ -84,7 +84,7 @@ internal static class Program
         {
             ReservedVerbs.Start => await StartAsync(cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Connect => await ConnectDesktopAsync(command, cancellationToken).ConfigureAwait(false),
-            ReservedVerbs.Stop => await StopAsync(cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.Stop => await StopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Run => await OpenSessionAsync(command, command.Arguments, cancellationToken)
                 .ConfigureAwait(false),
@@ -279,8 +279,19 @@ internal static class Program
         return (int)ExitCode.Ok;
     }
 
-    private static async Task<int> StopAsync(CancellationToken cancellationToken)
+    private static async Task<int> StopAsync(CommandLine command, CancellationToken cancellationToken)
     {
+        var parsed = CShellNet.Cli.For(command.Arguments)
+            .Program("airlock stop")
+            .Description("Destroy the running sandbox and detach every folder attached to it.")
+            .Switch(out bool force, "stop a sandbox even if Airlock cannot prove it started it")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return parsed.HelpRequested ? (int)ExitCode.Ok : (int)ExitCode.Usage;
+        }
+
         var host = new SandboxHost();
 
         if (await host.StopAsync(cancellationToken).ConfigureAwait(false))
@@ -289,9 +300,61 @@ internal static class Program
             return (int)ExitCode.Ok;
         }
 
-        AnsiConsole.MarkupLine("[dim]No Airlock sandbox is running.[/]");
+        // Nothing of ours. That is either genuinely nothing, or a sandbox we cannot claim - which
+        // includes one that really was ours before its key went away.
+        var running = await host.ListRunningAsync(cancellationToken).ConfigureAwait(false);
+
+        if (running.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[dim]No Airlock sandbox is running.[/]");
+            return (int)ExitCode.Ok;
+        }
+
+        if (!force)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]![/] A Windows Sandbox is running ({running[0]}), but Airlock cannot prove it started it.");
+            AnsiConsole.MarkupLine(
+                "It may be one you opened yourself, or one of Airlock's whose session key is gone. " +
+                "Run '[bold]airlock stop --force[/]' to stop it anyway.");
+
+            return (int)ExitCode.Ok;
+        }
+
+        foreach (var id in running)
+        {
+            if (!ConfirmForceStop(id))
+            {
+                AnsiConsole.MarkupLineInterpolated($"[dim]Left {id} running.[/]");
+                continue;
+            }
+
+            await host.ForceStopAsync(id, cancellationToken).ConfigureAwait(false);
+            AnsiConsole.MarkupLineInterpolated($"Stopped {id}.");
+        }
 
         return (int)ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// Asks before destroying a sandbox Airlock cannot claim, since it may be the user's own.
+    /// </summary>
+    /// <remarks>
+    /// With input redirected there is nobody to ask and <c>AskYesNo</c> would throw at end of
+    /// stream, so <c>--force</c> is taken as the answer - it was typed deliberately.
+    /// </remarks>
+    private static bool ConfirmForceStop(string id)
+    {
+        if (Console.IsInputRedirected)
+        {
+            return true;
+        }
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"Sandbox {id} is running and Airlock cannot prove it started it.");
+        AnsiConsole.MarkupLine("[dim]Anything unsaved inside it will be lost.[/]");
+
+        return CShellNet.Globals.AskYesNo("Stop it anyway?", false);
     }
 
     private static int NotYet(string what)

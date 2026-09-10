@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 
 namespace Airlock.Session;
@@ -58,13 +57,21 @@ public static class SshLauncher
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This is the one launch in Airlock that does not go through CShell, and the reason is
-    /// measured rather than theoretical. The child must inherit the real console handles - that is
-    /// what gives both ends a ConPTY, so a full-screen TUI draws and a prompt can be answered.
-    /// MedallionShell, underneath CShell, attaches its own readers to the child's streams, which is
-    /// not compatible with leaving them unredirected: routed that way the session produced
-    /// <b>no output at all</b> and reported exit code 1 for a remote <c>exit 42</c>. Everything
-    /// else - wsb, ssh-keygen, icacls, the non-interactive ssh probe - uses CShell.
+    /// There are two quite different jobs here, and which one applies depends on whether Airlock
+    /// owns a real console.
+    /// </para>
+    /// <para>
+    /// <b>Piped</b> - <c>airlock dotnet build &gt; log.txt</c>. This is ordinary command running, so
+    /// it goes through CShell: streams redirected as the library intends, forwarded to our own
+    /// stdout and stderr as they arrive.
+    /// </para>
+    /// <para>
+    /// <b>Interactive</b> - <c>airlock claude</c>. Here the child has to <i>inherit</i> the console
+    /// rather than be piped, and redirection is not a matter of taste: with a pipe on stdin, ssh has
+    /// no local terminal to read, so it cannot discover the window size or notice a resize, and the
+    /// remote pty is stuck at a default while the agent draws into it. Raw-mode keystrokes would
+    /// have to be pumped by hand as well. Inheriting the handles gives both ends a ConPTY for free,
+    /// which is what CShell's <c>ExecAsync</c> does - attach rather than capture.
     /// </para>
     /// <para>
     /// Secrets are placed in ssh.exe's own environment and named in <c>SendEnv</c>, so they never
@@ -81,11 +88,11 @@ public static class SshLauncher
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(secrets);
 
+        var interactive = !Console.IsInputRedirected && !Console.IsOutputRedirected;
         var args = new List<string>();
 
-        // -t forces a TTY, but only when we have one to give; without this, redirecting airlock's
-        // output ("airlock dotnet build > log.txt") would break.
-        if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
+        // -t forces a remote TTY, but only when we have a local one to size it from.
+        if (interactive)
         {
             args.Add("-t");
         }
@@ -117,32 +124,57 @@ public static class SshLauncher
         args.Add("exit");
         args.Add("$LASTEXITCODE");
 
-        var psi = new ProcessStartInfo(SshKeys.SshExe)
-        {
-            UseShellExecute = false,
-            RedirectStandardInput = false,
-            RedirectStandardOutput = false,
-            RedirectStandardError = false,
-        };
-
-        foreach (var arg in args)
-        {
-            psi.ArgumentList.Add(arg);
-        }
-
-        foreach (var (name, value) in secrets)
-        {
-            psi.Environment[name] = value;
-        }
-
-        using var guard = ConsoleModeGuard.Capture();
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Could not start {SshKeys.SshExe}.");
-
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-
-        return process.ExitCode;
+        return interactive
+            ? await InheritConsoleAsync(args, secrets, cancellationToken).ConfigureAwait(false)
+            : await PipeAsync(args, secrets, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Runs ssh as an ordinary command, streaming its output through to ours as it arrives.
+    /// </summary>
+    private static async Task<int> PipeAsync(
+        List<string> args,
+        IReadOnlyDictionary<string, string> secrets,
+        CancellationToken cancellationToken)
+    {
+        var result = await Run(
+                opt =>
+                {
+                    opt.CancellationToken(cancellationToken);
+                    opt.EnvironmentVariables(secrets);
+                },
+                SshKeys.SshExe,
+                [.. args])
+            .RedirectTo(Console.Out)
+            .RedirectStandardErrorTo(Console.Error)
+            .AsResult()
+            .ConfigureAwait(false);
+
+        return result.ExitCode;
+    }
+
+    /// <summary>
+    /// Hands the real console to ssh, so both ends get a ConPTY and the remote pty tracks the
+    /// window.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is redirected, which is the whole point and why <c>Run</c> is the wrong verb here.
+    /// CShell's <c>ExecAsync</c> is the one that attaches rather than captures, and it also puts
+    /// the console modes back afterwards, so a killed agent cannot leave the terminal with echo
+    /// switched off.
+    /// </remarks>
+    private static Task<int> InheritConsoleAsync(
+        List<string> args,
+        IReadOnlyDictionary<string, string> secrets,
+        CancellationToken cancellationToken) =>
+        ExecAsync(
+            opt =>
+            {
+                opt.CancellationToken(cancellationToken);
+                opt.EnvironmentVariables(secrets);
+            },
+            SshKeys.SshExe,
+            [.. args]);
 
     /// <summary>PowerShell's -EncodedCommand expects base64 of UTF-16LE, not UTF-8.</summary>
     public static string Encode(string script) =>
