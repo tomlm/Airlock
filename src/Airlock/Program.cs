@@ -100,7 +100,7 @@ internal static class Program
             // No arguments after the verb means a shell: you have opened the airlock and stepped in.
             ReservedVerbs.Open =>
                 await OpenSessionAsync(command, command.Arguments, cancellationToken).ConfigureAwait(false),
-            _ => NotYet(command.Verb!),
+            _ => throw new InvalidOperationException($"Verb '{command.Verb}' has no handler."),
         };
 
     private static AirlockConfigStore Config { get; } = new();
@@ -260,57 +260,99 @@ internal static class Program
         return (int)ExitCode.Ok;
     }
 
+    /// <summary>
+    /// Lists the airlocks - the read-write workspaces - and whether each is open right now.
+    /// </summary>
+    /// <remarks>
+    /// The airlocks are the interesting part: there is only ever one sandbox, so its identity is a
+    /// footnote rather than the headline. Tools have their own verb.
+    /// </remarks>
     private static async Task<int> ListAsync(CancellationToken cancellationToken)
     {
         var host = new SandboxHost();
         var state = await host.GetStateAsync(cancellationToken).ConfigureAwait(false);
+        var config = Config.LoadOrCreate();
 
+        if (config.Airlocks.Count == 0)
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]No airlocks. Run '[/][bold]airlock open[/][dim]' in a project folder to add one.[/]");
+        }
+        else
+        {
+            var table = new Table().Border(TableBorder.Rounded);
+            table.AddColumn("Airlock");
+            table.AddColumn("Host folder (read-write)");
+            table.AddColumn("In the sandbox");
+            table.AddColumn("Open");
+
+            foreach (var airlock in config.Airlocks)
+            {
+                table.AddRow(
+                    Markup.Escape(airlock.Name),
+                    Directory.Exists(airlock.Host)
+                        ? Markup.Escape(airlock.Host)
+                        : $"[red]{Markup.Escape(airlock.Host)}[/]",
+                    Markup.Escape(SandboxPaths.ForProject(airlock.Name)),
+                    OpenState(state, airlock.Host));
+            }
+
+            AnsiConsole.Write(table);
+
+            if (config.Airlocks.Any(a => !Directory.Exists(a.Host)))
+            {
+                AnsiConsole.MarkupLine(
+                    "[yellow]![/] A folder in red no longer exists and will be skipped at the next start.");
+            }
+        }
+
+        return await DescribeSandboxAsync(host, state, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether this airlock is mounted in the sandbox as it stands.</summary>
+    private static string OpenState(SandboxState? state, string hostPath)
+    {
         if (state is null)
         {
-            var others = await new WsbClient().ListAsync(cancellationToken).ConfigureAwait(false);
+            return "[dim]-[/]";
+        }
+
+        if (state.Folders.Any(f => f.HostPath.Equals(hostPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return "[green]yes[/]";
+        }
+
+        // An adopted record lost its folder list, so "no" would be a guess rather than an answer.
+        return state.Adopted ? "[yellow]?[/]" : "no";
+    }
+
+    /// <summary>The one-line footnote about the sandbox itself.</summary>
+    private static async Task<int> DescribeSandboxAsync(
+        SandboxHost host,
+        SandboxState? state,
+        CancellationToken cancellationToken)
+    {
+        if (state is null)
+        {
+            var others = await host.ListRunningAsync(cancellationToken).ConfigureAwait(false);
 
             AnsiConsole.MarkupLine(others.Count == 0
-                ? "[dim]No sandbox is running.[/]"
-                : $"[yellow]A Windows Sandbox that Airlock did not start is running ({others[0]}).[/]");
+                ? "[dim]Sandbox not running. Start it with 'airlock start'.[/]"
+                : $"[yellow]![/] A Windows Sandbox that Airlock did not start is running ({others[0]}).");
 
             return (int)ExitCode.Ok;
         }
 
         AnsiConsole.MarkupLineInterpolated(
-            $"Sandbox [bold]{state.Id}[/], up since {state.StartedUtc.ToLocalTime():g}");
+            $"[dim]Sandbox {state.Id}, up since {state.StartedUtc.ToLocalTime():g}.[/]");
 
         if (state.Adopted)
         {
-            // Identified by key rather than by our records, so the folder list is genuinely unknown
-            // rather than empty. Saying "none attached" here would be a lie.
             AnsiConsole.MarkupLine(
-                "[yellow]![/] Recovered by signing in, after the local record was lost. Folders " +
-                "attached before that are still attached and still writable, but cannot be listed. " +
-                "Run '[bold]airlock stop[/]' to clear them.");
-
-            if (state.Folders.Count == 0)
-            {
-                return (int)ExitCode.Ok;
-            }
+                "[yellow]![/] Recovered after the local record was lost, so which airlocks it has " +
+                "mounted is unknown - anything opened before then is still mounted and still " +
+                "writable. '[bold]airlock stop[/]' clears them.");
         }
-        else if (state.Folders.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[dim]No folders attached.[/]");
-            return (int)ExitCode.Ok;
-        }
-
-        // Every attached folder is writable from inside the sandbox, and stays that way until it is
-        // stopped, so listing them is the honest picture of what is currently exposed.
-        var table = new Table().Border(TableBorder.Rounded);
-        table.AddColumn("Host folder (read-write)");
-        table.AddColumn("In the sandbox");
-
-        foreach (var folder in state.Folders)
-        {
-            table.AddRow(Markup.Escape(folder.HostPath), Markup.Escape(folder.SandboxPath));
-        }
-
-        AnsiConsole.Write(table);
 
         return (int)ExitCode.Ok;
     }
@@ -391,12 +433,6 @@ internal static class Program
         AnsiConsole.MarkupLine("[dim]Anything unsaved inside it will be lost.[/]");
 
         return CShellNet.Globals.AskYesNo("Stop it anyway?", false);
-    }
-
-    private static int NotYet(string what)
-    {
-        AnsiConsole.MarkupLineInterpolated($"[yellow]airlock:[/] '{what}' is not implemented yet.");
-        return (int)ExitCode.Internal;
     }
 
     private static void Fail(string message) =>

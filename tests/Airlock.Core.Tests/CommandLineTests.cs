@@ -107,7 +107,6 @@ public class CommandLineTests
     [Theory]
     [InlineData("list")]
     [InlineData("stop")]
-    [InlineData("doctor")]
     [InlineData("connect")]
     [InlineData("start")]
     [InlineData("tools")]

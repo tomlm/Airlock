@@ -14,10 +14,9 @@ The agent runs in a window you can see, in `C:\airlock\MyProject`. The desktop i
 the things a terminal cannot do — a browser sign-in, a UI test, a visual build. `airlock stop`
 destroys the VM and everything installed in it.
 
-> **Status: in development.** Configuration, `start`/`stop`/`list`/`open`/`add`/`tools`, provisioning
-> and the GUI launch all work and are verified live against Windows Sandbox. `doctor` is not
-> implemented. See [`spikes/FINDINGS.md`](spikes/FINDINGS.md) for what has been established by
-> experiment rather than assumption.
+> **Status: in development.** Every command works and is verified live against Windows Sandbox. See
+> [`spikes/FINDINGS.md`](spikes/FINDINGS.md) for what has been established by experiment rather than
+> assumption.
 
 ## Why
 
@@ -45,7 +44,7 @@ The sandbox's own `C:` is writable but ephemeral: installs, caches and scratch f
 ```
 airlock start               boot with every configured tool and airlock mounted, show the desktop
 airlock stop [--force]      destroy the sandbox
-airlock list                the sandbox, and every airlock currently open in it
+airlock list                every airlock, and whether it is open right now
 airlock open [tool ...]     open this folder as an airlock and launch a tool in it, or a shell
 airlock add [-p:<path>]     register a folder as an airlock without opening it
 airlock remove              unregister one

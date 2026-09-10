@@ -12,7 +12,7 @@ public enum InvocationKind
     /// <summary>Print the version and exit 0.</summary>
     Version,
 
-    /// <summary>One of Airlock's own verbs — <c>list</c>, <c>doctor</c>, <c>tools</c>, …</summary>
+    /// <summary>One of Airlock's own verbs — <c>open</c>, <c>list</c>, <c>tools</c>, …</summary>
     Verb,
 
     /// <summary>The command line was not usable. <see cref="CommandLine.Error"/> says why.</summary>
@@ -82,7 +82,7 @@ public sealed class CommandLine
             .Example("airlock open", "open this folder as an airlock and get a shell in it")
             .Example("airlock --project:S:\\src\\Foo open", "open a folder other than this one")
             .Example("airlock tools add S:\\bin\\mytools", "mount a folder read-only onto the PATH")
-            .Example("airlock list", "the sandbox, and every airlock open in it")
+            .Example("airlock list", "every airlock, and whether it is open right now")
             .Rest("verb", ReservedVerbs.Usage)
             .Option(out string? project, "the folder to open; defaults to the current directory", "p")
             .Switch(out bool dryRun, "show what would be mounted and exit without starting anything")

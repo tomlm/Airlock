@@ -36,7 +36,6 @@ public static class ReservedVerbs
     /// <summary>Reopen the sandbox desktop window.</summary>
     public const string Connect = "connect";
 
-    public const string Doctor = "doctor";
 
     /// <summary>
     /// Every verb with its one-line summary, in the order help should list them: the ones you reach
@@ -52,12 +51,11 @@ public static class ReservedVerbs
         (Open, "open this folder as an airlock and run a tool in it, or a shell"),
         (Start, "bring the sandbox up with every configured tool and airlock"),
         (Stop, "destroy the sandbox; --force stops one it cannot prove is its own"),
-        (List, "the sandbox, and every airlock open in it"),
+        (List, "every airlock, and whether it is open right now"),
         (Add, "register this folder as an airlock without opening it"),
         (Remove, "unregister it; it stays mounted until the sandbox stops"),
         (Tools, "list, add or remove the read-only mounts that land on PATH"),
         (Connect, "reopen the sandbox desktop window"),
-        (Doctor, "check the host for whatever Airlock needs"),
     ];
 
     public static IReadOnlyList<string> All { get; } = [.. Described.Select(d => d.Verb)];

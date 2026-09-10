@@ -58,7 +58,7 @@ internal static class ConfigCommands
     internal static int Remove(AirlockConfigStore store, string? requestedPath, bool sandboxRunning)
     {
         var config = store.LoadOrCreate();
-        var host = ProjectResolver.Resolve(requestedPath).HostPath;
+        var host = ResolveForRemoval(requestedPath);
         var existing = config.FindByHost(host);
 
         if (existing is null)
@@ -82,9 +82,55 @@ internal static class ConfigCommands
         return (int)ExitCode.Ok;
     }
 
+    /// <summary>
+    /// The path to unregister, without requiring that it still exists.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ProjectResolver"/> refuses a folder that is gone, which is right when opening one
+    /// and wrong when removing it: <c>airlock list</c> shows a deleted folder in red and says it
+    /// will be skipped, so there has to be a way to clear it. Falling back to the plain full path
+    /// matches how it was recorded in the first place.
+    /// </remarks>
+    private static string ResolveForRemoval(string? requestedPath)
+    {
+        try
+        {
+            return ProjectResolver.Resolve(requestedPath).HostPath;
+        }
+        catch (ProjectValidationException)
+        {
+            return System.IO.Path.GetFullPath(
+                string.IsNullOrWhiteSpace(requestedPath) ? Directory.GetCurrentDirectory() : requestedPath);
+        }
+    }
+
     /// <summary>Lists, adds or removes the read-only mounts that go on PATH.</summary>
+    /// <remarks>
+    /// Parsed through CShell like the other verbs rather than by hand, which is what makes
+    /// <c>airlock tools --help</c> answer instead of complaining that <c>--help</c> is not a tools
+    /// command. CShell has no notion of subcommands, so the actions are examples and the dispatch
+    /// below is still ours - but the help is generated, and so cannot drift.
+    /// </remarks>
     internal static int Tools(AirlockConfigStore store, IReadOnlyList<string> args)
     {
+        var parsed = CShellNet.Cli.For(args)
+            .Program("airlock tools")
+            .Description(
+                "Manage the read-only mounts that land on the sandbox's PATH. Changes take effect " +
+                "the next time the sandbox starts.")
+            .Example("airlock tools", "list them")
+            .Example("airlock tools add S:\\bin\\mytools", "mount a folder read-only and put it on PATH")
+            .Example("airlock tools add \"C:\\Program Files\\Foo\" foo", "the same, with an explicit id")
+            .Example("airlock tools remove foo", "stop mounting it")
+            .Example("airlock tools refresh", "re-probe the auto-detected toolchains")
+            .Rest("action", "list | add | remove | refresh")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return parsed.HelpRequested ? (int)ExitCode.Ok : (int)ExitCode.Usage;
+        }
+
         var config = store.LoadOrCreate();
 
         return args.Count == 0
@@ -208,7 +254,7 @@ internal static class ConfigCommands
     private static int Unknown(string what)
     {
         AnsiConsole.MarkupLineInterpolated(
-            $"[red]airlock:[/] '{what}' is not a tools command. Try add, remove, list or refresh.");
+            $"[red]airlock:[/] '{what}' is not a tools command. Try 'airlock tools --help'.");
 
         return (int)ExitCode.Usage;
     }
