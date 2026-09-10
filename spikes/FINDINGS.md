@@ -109,3 +109,83 @@ SSH return path. The rule must:
 
 or scope the block to the host's real LAN prefixes only. `blockLan` must be verified from inside the
 guest after the rules are applied (internet still reachable, host LAN not), not assumed.
+
+## `wsb connect` (S11)
+
+| Question | Result |
+|---|---|
+| Does `wsb connect --id <id>` open the sandbox desktop? | **Yes.** `WindowsSandboxRemoteSession` appears with the window title "Windows Sandbox". |
+| Which account does the desktop session run as? | **`WDAGUtilityAccount`** - Windows Sandbox's own default user, *not* the `airlock` account SSH sessions use. |
+| Does the call block until the window closes? | No, it returns while the window stays open. |
+
+### The desktop is a different Windows session from the agent's
+
+`whoami` in the desktop session returns `<host>\wdagutilityaccount`; SSH sessions return
+`<host>\airlock`. Two separate accounts with separate profiles, so **a browser sign-in or a
+per-user install done in the window does not carry into the agent's session**. Mapped folders are
+shared between them, which is what makes the window useful for inspecting files and debugging a
+sandbox that came up wrong - but it rules out the "log in via the GUI so the agent is authenticated"
+idea. Credentials still have to arrive over SSH via `SendEnv`.
+
+### Do not redirect the launcher's streams
+
+Launching `wsb connect` with `RedirectStandardOutput`/`RedirectStandardError` kept it attached to
+Airlock and made `airlock connect` take **~32 s** to return. Launching it detached
+(`UseShellExecute = true`, no redirection) returns promptly. A GUI launcher has nothing useful to
+say on stdout, so nothing is lost.
+
+### `-r ExistingLogin` depends on uptime, not just on a client
+
+The brief states `ExistingLogin` fails without an attached client. On a **freshly provisioned**
+sandbox that is exactly what happens (`Failed to start process in Windows Sandbox environment`), and
+it starts working within seconds of `connect`. But on a sandbox that had been up ~15 minutes it
+**succeeded with no client ever attached**. So the rule is weaker than "needs a client". Airlock
+uses `-r System` for everything and depends on `ExistingLogin` nowhere.
+
+
+## The remote exit code is eaten by sshd's shell wrapper (S12)
+
+`airlock -- powershell -Command "exit 42"` returned **1**. The cause is not ssh and not Airlock:
+sshd runs a remote command as `DefaultShell -Command "<the command>"`, and that outer PowerShell
+exits **0 or 1** for success or failure rather than passing on the exit code of what it ran. The
+success case looks correct by coincidence, which is what makes this easy to miss.
+
+Confirmed by isolating it: the exact base64 script, run locally under Windows PowerShell 5.1,
+returns 42. Only the ssh path lost it.
+
+**Fix.** Append a second statement to the remote command so the wrapper exits deliberately:
+
+    powershell.exe -NoLogo -NoProfile -EncodedCommand <b64> ; exit $LASTEXITCODE
+
+ssh joins remote-command arguments with spaces and does no quoting of its own, so passing `;`,
+`exit` and `$LASTEXITCODE` as separate arguments arrives at the guest shell as a second statement.
+Verified: `exit 42` now returns 42, and 0 still returns 0.
+
+## CShell cannot make the interactive hand-off (S12)
+
+Everything Airlock launches goes through CShell - `wsb` and `icacls` and `ssh-keygen` via `Run`,
+`wsb connect` via `Start` - with exactly one exception, established by measurement rather than
+theory.
+
+The interactive ssh session must inherit the real console handles, since that is what gives both
+ends a ConPTY and lets a full-screen TUI draw. MedallionShell, underneath CShell, attaches its own
+readers to the child's streams, and that is incompatible with leaving them unredirected. Routed
+through `Run(opt => opt.StartInfo(psi => psi.RedirectStandardOutput = false ...))` the session
+produced **no output at all** and reported **exit code 1** for a remote `exit 42`. The same call via
+`Process.Start` with all three streams unredirected produced the output and the correct code.
+
+`Start()` is not an alternative: it forces `UseShellExecute = true`, which spawns a *new* console
+rather than inheriting the caller's.
+
+## Identifying our own sandbox (S12)
+
+A sandbox's mounts cannot be inspected from the host - `wsb list` returns only ids, and `wsb exec`
+returns neither output nor the remote exit code, so "does `C:irlock	ools` exist" is
+unanswerable from outside. The **SSH key is the identifier instead**, and a better one: the keypair
+is generated per sandbox and its public half is written only into that sandbox's
+`administrators_authorized_keys`, so a successful login proves *this* Airlock install provisioned
+*that* sandbox.
+
+Verified: with `sandbox.json` deleted while a sandbox was running, `airlock list` recovered the same
+id by signing in. Attached folders cannot be recovered - nothing on the host records them - so the
+rebuilt record is flagged and `airlock list` says so instead of showing an empty table.

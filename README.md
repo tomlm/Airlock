@@ -51,6 +51,11 @@ airlock stop                     # destroys the VM and detaches everything
 `airlock start` brings the sandbox up with **no** folders attached, so you can pay the boot cost up
 front.
 
+`airlock connect` opens the sandbox's own desktop window, which is useful for looking at what an
+agent did or working out why a sandbox came up wrong. Note that the window signs in as
+`WDAGUtilityAccount`, a different Windows account from the `airlock` user your agent sessions run
+as: mapped folders are shared between them, but sign-ins and per-user installs are not.
+
 Worth knowing: attached folders accumulate. Windows Sandbox has no unshare, so once A and B are both
 attached they are writable *at the same time*, and an agent working in A can reach B. `airlock list`
 is the honest picture of what is currently exposed; `airlock stop` is what resets it.
@@ -63,7 +68,7 @@ airlock shell              attach the current project and open an interactive sh
 airlock start              start the sandbox with no folders attached, and leave it running
 airlock list               show the sandbox and every folder currently attached
 airlock stop               destroy the sandbox and detach everything
-airlock connect            open the sandbox desktop window (browser logins, debugging)
+airlock connect            open the sandbox desktop window (looking around, debugging)
 airlock doctor             check Sandbox, CmService, wsb.exe, toolchains
 airlock tools update       refresh the host-side tools folder
 airlock trust              manage per-project .airlock.json approvals

@@ -62,24 +62,90 @@ public sealed class SandboxHost(
     /// </remarks>
     public async Task<SandboxState?> GetStateAsync(CancellationToken cancellationToken = default)
     {
-        var state = _store.Load();
         var running = await _wsb.ListAsync(cancellationToken).ConfigureAwait(false);
+        var state = _store.Load();
 
-        if (state is null)
+        if (running.Count == 0)
+        {
+            // Nothing is running, so whatever we recorded is history and the key with it.
+            if (state is not null)
+            {
+                _store.Clear();
+                _layout.Delete();
+            }
+
+            return null;
+        }
+
+        if (state is not null && running.Contains(state.Id, StringComparer.OrdinalIgnoreCase))
+        {
+            return state;
+        }
+
+        // Our record is missing or stale, but something is running. Ask the sandbox itself who it
+        // belongs to rather than guessing from a file we may have lost.
+        _store.Clear();
+
+        return await TryAdoptAsync(running, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Works out whether a running sandbox is one of ours by trying to log into it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There is no way to ask <c>wsb</c> what a sandbox has mounted - <c>list</c> reports only ids,
+    /// and <c>exec</c> returns neither output nor the remote exit code, so "does C:\airlock\tools
+    /// exist" cannot be answered from the host. The SSH key can, and it is better evidence: the
+    /// keypair is generated per sandbox and its public half is written only into that sandbox's
+    /// <c>administrators_authorized_keys</c>. If it authenticates, this Airlock install provisioned
+    /// that sandbox.
+    /// </para>
+    /// <para>
+    /// This is what lets Airlock recover from a lost or corrupt state file instead of being locked
+    /// out of its own sandbox. If the key is gone too, ownership genuinely cannot be proven and the
+    /// sandbox is left alone.
+    /// </para>
+    /// </remarks>
+    private async Task<SandboxState?> TryAdoptAsync(
+        IReadOnlyList<string> running,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(_layout.PrivateKeyPath))
         {
             return null;
         }
 
-        if (!running.Contains(state.Id, StringComparer.OrdinalIgnoreCase))
+        foreach (var id in running)
         {
-            // The sandbox we recorded is gone; the key that went with it is worthless.
-            _store.Clear();
-            _layout.Delete();
+            var ip = await _wsb.GetIpAsync(id, cancellationToken).ConfigureAwait(false);
 
-            return null;
+            if (string.IsNullOrEmpty(ip))
+            {
+                continue;
+            }
+
+            if (!await SshLauncher.ProbeAsync(_layout, ip, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            // Folders cannot be recovered - nothing on the host records what was attached once the
+            // state file is gone - so the rebuilt record says so rather than claiming none.
+            var state = new SandboxState
+            {
+                Id = id,
+                IpAddress = ip,
+                StartedUtc = DateTimeOffset.UtcNow,
+                Adopted = true,
+            };
+
+            _store.Save(state);
+
+            return state;
         }
 
-        return state;
+        return null;
     }
 
     /// <summary>
@@ -271,6 +337,24 @@ public sealed class SandboxHost(
             SshLauncher.BuildRemoteCommand(sandboxPath, effective),
             CollectSecrets(),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Opens the sandbox's desktop window.
+    /// </summary>
+    /// <remarks>
+    /// The desktop signs in as Windows Sandbox's own default user, <c>WDAGUtilityAccount</c>, not as
+    /// the <c>airlock</c> account that SSH sessions use. The two are separate Windows sessions with
+    /// separate profiles, so anything done in the window - a browser sign-in, a tool installed into
+    /// the user profile - does not carry into the agent's session. Mapped folders are shared, so it
+    /// is genuinely useful for looking at files, watching what the agent did, or debugging a sandbox
+    /// that came up wrong.
+    /// </remarks>
+    public async Task OpenDesktopAsync(SandboxState state, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        await _wsb.OpenDesktopAsync(state.Id, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Destroys the sandbox and removes the key that went with it.</summary>

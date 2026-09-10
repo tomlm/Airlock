@@ -26,6 +26,15 @@ public interface IWsbClient
     Task StopAsync(string id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Opens the sandbox's desktop window.
+    /// </summary>
+    /// <remarks>
+    /// Returns once the window has been launched, not when the user closes it, so the shell comes
+    /// back straight away. A failure that happens immediately is still reported.
+    /// </remarks>
+    Task OpenDesktopAsync(string id, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Runs a command in the sandbox and blocks until it exits.
     /// </summary>
     /// <returns>

@@ -27,9 +27,10 @@ public static class SshLauncher
     ];
 
     /// <summary>
-    /// Confirms the sandbox is genuinely ready: an open port only proves sshd is listening, while a
-    /// successful non-interactive command proves key auth, the user account and the shell all work.
-    /// This is the success signal for provisioning, because <c>wsb exec</c> reports no status.
+    /// Confirms the sandbox is genuinely ready, and that it is <i>ours</i>: an open port only proves
+    /// sshd is listening, while a successful non-interactive command proves key auth, the user
+    /// account and the shell all work. This is the success signal for provisioning, because
+    /// <c>wsb exec</c> reports no status at all.
     /// </summary>
     public static async Task<bool> ProbeAsync(
         SandboxLayout layout,
@@ -45,23 +46,11 @@ public static class SshLauncher
             "exit",
         };
 
-        var psi = new ProcessStartInfo(SshKeys.SshExe)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        var result = await Run(opt => opt.CancellationToken(cancellationToken), SshKeys.SshExe, [.. args])
+            .AsResult()
+            .ConfigureAwait(false);
 
-        foreach (var a in args)
-        {
-            psi.ArgumentList.Add(a);
-        }
-
-        using var process = Process.Start(psi)!;
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-
-        return process.ExitCode == 0;
+        return result.Success;
     }
 
     /// <summary>
@@ -69,11 +58,13 @@ public static class SshLauncher
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This is the one place Airlock does not use CShell's <c>Run</c>. CShell redirects all three
-    /// standard streams, which is exactly wrong here: a redirected child gets no console, so a
-    /// full-screen TUI draws nothing and anything that prompts hangs on a pipe nobody will write
-    /// to. Leaving every handle inherited is what gives both ends a real ConPTY, and it means
-    /// <c>CommandResult.StandardOutput</c> would be meaningless anyway.
+    /// This is the one launch in Airlock that does not go through CShell, and the reason is
+    /// measured rather than theoretical. The child must inherit the real console handles - that is
+    /// what gives both ends a ConPTY, so a full-screen TUI draws and a prompt can be answered.
+    /// MedallionShell, underneath CShell, attaches its own readers to the child's streams, which is
+    /// not compatible with leaving them unredirected: routed that way the session produced
+    /// <b>no output at all</b> and reported exit code 1 for a remote <c>exit 42</c>. Everything
+    /// else - wsb, ssh-keygen, icacls, the non-interactive ssh probe - uses CShell.
     /// </para>
     /// <para>
     /// Secrets are placed in ssh.exe's own environment and named in <c>SendEnv</c>, so they never
@@ -90,6 +81,42 @@ public static class SshLauncher
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(secrets);
 
+        var args = new List<string>();
+
+        // -t forces a TTY, but only when we have one to give; without this, redirecting airlock's
+        // output ("airlock dotnet build > log.txt") would break.
+        if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
+        {
+            args.Add("-t");
+        }
+
+        args.AddRange(BaseOptions(layout.PrivateKeyPath));
+
+        foreach (var name in secrets.Keys)
+        {
+            args.Add("-o");
+            args.Add($"SendEnv={name}");
+        }
+
+        args.Add($"{SetupScript.SandboxUser}@{ip}");
+
+        // Three layers of quoting sit between here and the guest shell (our argv, ssh's
+        // remote-command concatenation, then DefaultShell -Command). Base64 removes all of them;
+        // sending the script text directly is not merely fragile, it is broken.
+        args.Add("powershell.exe");
+        args.Add("-NoLogo");
+        args.Add("-NoProfile");
+        args.Add("-EncodedCommand");
+        args.Add(Encode(remoteCommand));
+
+        // sshd runs the remote command as `DefaultShell -Command "<all of the above>"`, and that
+        // wrapper exits 0 or 1 for success or failure rather than passing on what it ran. Without
+        // this, a remote `exit 42` reaches the caller as 1. ssh joins these with spaces, so the
+        // guest shell sees them as a second statement.
+        args.Add(";");
+        args.Add("exit");
+        args.Add("$LASTEXITCODE");
+
         var psi = new ProcessStartInfo(SshKeys.SshExe)
         {
             UseShellExecute = false,
@@ -98,39 +125,19 @@ public static class SshLauncher
             RedirectStandardError = false,
         };
 
-        // -t forces a TTY, but only when we have one to give; without this, redirecting airlock's
-        // output ("airlock dotnet build > log.txt") would break.
-        var interactive = !Console.IsInputRedirected && !Console.IsOutputRedirected;
-        if (interactive)
+        foreach (var arg in args)
         {
-            psi.ArgumentList.Add("-t");
+            psi.ArgumentList.Add(arg);
         }
 
-        foreach (var option in BaseOptions(layout.PrivateKeyPath))
+        foreach (var (name, value) in secrets)
         {
-            psi.ArgumentList.Add(option);
+            psi.Environment[name] = value;
         }
-
-        foreach (var name in secrets.Keys)
-        {
-            psi.Environment[name] = secrets[name];
-            psi.ArgumentList.Add("-o");
-            psi.ArgumentList.Add($"SendEnv={name}");
-        }
-
-        psi.ArgumentList.Add($"{SetupScript.SandboxUser}@{ip}");
-
-        // Three layers of quoting sit between here and the guest shell (our argv, ssh's
-        // remote-command concatenation, then DefaultShell -Command). Base64 removes all of them;
-        // sending the script text directly is not merely fragile, it is broken.
-        psi.ArgumentList.Add("powershell.exe");
-        psi.ArgumentList.Add("-NoLogo");
-        psi.ArgumentList.Add("-NoProfile");
-        psi.ArgumentList.Add("-EncodedCommand");
-        psi.ArgumentList.Add(Encode(remoteCommand));
 
         using var guard = ConsoleModeGuard.Capture();
-        using var process = Process.Start(psi)!;
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException($"Could not start {SshKeys.SshExe}.");
 
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
 

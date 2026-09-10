@@ -83,6 +83,7 @@ internal static class Program
         command.Verb switch
         {
             ReservedVerbs.Start => await StartAsync(cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.Connect => await ConnectDesktopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Stop => await StopAsync(cancellationToken).ConfigureAwait(false),
             ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Run => await OpenSessionAsync(command, command.Arguments, cancellationToken)
@@ -111,6 +112,34 @@ internal static class Program
 
         AnsiConsole.MarkupLineInterpolated($"Sandbox running at {state.IpAddress} with no folders attached.");
         AnsiConsole.MarkupLine("[dim]Attach one by running 'airlock <command>' in a project; stop it with 'airlock stop'.[/]");
+
+        return (int)ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// Opens the sandbox's desktop window, for looking at what the agent did or working out why a
+    /// sandbox came up wrong.
+    /// </summary>
+    private static async Task<int> ConnectDesktopAsync(CommandLine command, CancellationToken cancellationToken)
+    {
+        var host = new SandboxHost();
+        var state = await WithStatusAsync(host, command.MemoryInMB, cancellationToken).ConfigureAwait(false);
+
+        await host.OpenDesktopAsync(state, cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.MarkupLineInterpolated($"Opening the desktop for sandbox {state.Id}.");
+
+        if (state.Folders.Count > 0)
+        {
+            AnsiConsole.MarkupLine("[dim]Attached folders are visible under C:\\work.[/]");
+        }
+
+        // Worth stating rather than letting someone discover it by trying to sign in: the window is
+        // a different Windows session from the one the agent runs in.
+        AnsiConsole.MarkupLine(
+            "[dim]The window signs in as WDAGUtilityAccount, which is a different account from the " +
+            "'airlock' user your agent sessions run as. Files are shared; sign-ins and per-user " +
+            "installs are not.[/]");
 
         return (int)ExitCode.Ok;
     }
@@ -214,7 +243,21 @@ internal static class Program
         AnsiConsole.MarkupLineInterpolated(
             $"Sandbox [bold]{state.Id}[/] at {state.IpAddress}, up since {state.StartedUtc.ToLocalTime():g}");
 
-        if (state.Folders.Count == 0)
+        if (state.Adopted)
+        {
+            // Identified by key rather than by our records, so the folder list is genuinely unknown
+            // rather than empty. Saying "none attached" here would be a lie.
+            AnsiConsole.MarkupLine(
+                "[yellow]![/] Recovered by signing in, after the local record was lost. Folders " +
+                "attached before that are still attached and still writable, but cannot be listed. " +
+                "Run '[bold]airlock stop[/]' to clear them.");
+
+            if (state.Folders.Count == 0)
+            {
+                return (int)ExitCode.Ok;
+            }
+        }
+        else if (state.Folders.Count == 0)
         {
             AnsiConsole.MarkupLine("[dim]No folders attached.[/]");
             return (int)ExitCode.Ok;

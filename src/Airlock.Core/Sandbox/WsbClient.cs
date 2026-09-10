@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using CShellNet;
 using Medallion.Shell;
 
 namespace Airlock.Sandbox;
@@ -16,14 +15,6 @@ namespace Airlock.Sandbox;
 public sealed partial class WsbClient : IWsbClient
 {
     private const string Executable = "wsb.exe";
-
-    private readonly CShell _shell;
-
-    public WsbClient(CShell? shell = null)
-    {
-        // CShell echoes every command line to stdout by default, which would corrupt our own output.
-        _shell = shell ?? new CShell { Echo = false };
-    }
 
     public async Task<string> StartAsync(
         string requestedId,
@@ -101,6 +92,37 @@ public sealed partial class WsbClient : IWsbClient
         await RunAsync(cancellationToken, "stop", "--id", id).ConfigureAwait(false);
     }
 
+    public async Task OpenDesktopAsync(string id, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+
+        // Start rather than Run: `wsb connect` owns a window for as long as the user keeps it open,
+        // so it is launched detached and unredirected. Holding its pipes keeps it attached to us
+        // and delayed the call by ~30s, and a GUI launcher has nothing useful to say on stdout.
+        var command = Start(Executable, "connect", "--id", id);
+
+        try
+        {
+            // A grace period only to catch a failure that is immediate; still running afterwards is
+            // exactly what success looks like here.
+            await command.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return;
+        }
+
+        if (!command.Result.Success)
+        {
+            throw new WsbException(
+                "Could not open the sandbox window.",
+                "connect",
+                command.Result.ExitCode,
+                string.Empty,
+                string.Empty);
+        }
+    }
+
     public async Task<bool> ExecAsync(
         string id,
         string command,
@@ -143,8 +165,8 @@ public sealed partial class WsbClient : IWsbClient
         Throw(result, "share", $"Failed to map '{hostPath}' into the running sandbox.");
     }
 
-    private Task<CommandResult> RunAsync(CancellationToken cancellationToken, params string[] args) =>
-        _shell.Run(
+    private static Task<CommandResult> RunAsync(CancellationToken cancellationToken, params string[] args) =>
+        Run(
             opt => opt.CancellationToken(cancellationToken),
             Executable,
             args.Cast<object>().ToArray()).AsResult();

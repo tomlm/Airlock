@@ -432,3 +432,4 @@ FodyWeavers.xsd
 artifacts/
 spikes/*.log
 spikes/*-results.json
+spikes/_who.txt

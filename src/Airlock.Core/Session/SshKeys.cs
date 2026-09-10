@@ -1,5 +1,3 @@
-using CShellNet;
-
 namespace Airlock.Session;
 
 /// <summary>Generates the per-session SSH identity.</summary>
@@ -20,14 +18,11 @@ public static class SshKeys
     {
         ArgumentNullException.ThrowIfNull(layout);
 
-        var shell = new CShell { Echo = false };
-
         // -N "" is the empty passphrase. Passing it as a real empty argument works here because
         // the argument list is handed to the process directly; it is only shells that lose it.
-        var result = await shell
-            .Run(
-                opt => opt.CancellationToken(cancellationToken),
-                SshKeygenExe,
+        var result = await Run(
+            opt => opt.CancellationToken(cancellationToken),
+            SshKeygenExe,
                 "-t", "ed25519",
                 "-N", string.Empty,
                 "-C", "airlock-session",
@@ -48,7 +43,7 @@ public static class SshKeys
                 "ssh-keygen produced a passphrase-protected key; the empty -N did not survive.");
         }
 
-        await LockDownAsync(shell, layout.PrivateKeyPath, cancellationToken).ConfigureAwait(false);
+        await LockDownAsync(layout.PrivateKeyPath, cancellationToken).ConfigureAwait(false);
 
         // The sandbox only ever sees the public half.
         File.Copy(layout.PublicKeyPath, layout.AuthorizedKeyPath, overwrite: true);
@@ -58,12 +53,11 @@ public static class SshKeys
     /// ssh.exe refuses a private key whose ACL is loose ("UNPROTECTED PRIVATE KEY FILE"), so the
     /// inherited permissions have to go.
     /// </summary>
-    private static async Task LockDownAsync(CShell shell, string keyPath, CancellationToken cancellationToken)
+    private static async Task LockDownAsync(string keyPath, CancellationToken cancellationToken)
     {
         var user = $"{Environment.UserDomainName}\\{Environment.UserName}";
 
-        await shell
-            .Run(
+        await Run(
                 opt => opt.CancellationToken(cancellationToken),
                 "icacls.exe", keyPath, "/inheritance:r", "/grant", $"{user}:F")
             .AsResult()

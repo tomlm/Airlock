@@ -27,6 +27,16 @@ public sealed class SandboxState
     /// a folder stays writable until the sandbox is stopped.
     /// </summary>
     public List<AttachedFolder> Folders { get; set; } = [];
+
+    /// <summary>
+    /// True when this record was rebuilt by proving ownership over SSH rather than read from disk.
+    /// </summary>
+    /// <remarks>
+    /// Nothing on the host records what a sandbox has mounted, so an adopted record cannot recover
+    /// <see cref="Folders"/>. Anything already attached is still attached and still writable - it
+    /// just will not be listed, which is worth saying out loud rather than showing an empty table.
+    /// </remarks>
+    public bool Adopted { get; set; }
 }
 
 /// <summary>Reads and writes <see cref="SandboxState"/> next to the rest of Airlock's data.</summary>
