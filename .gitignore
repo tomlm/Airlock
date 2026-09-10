@@ -427,3 +427,8 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Airlock
+artifacts/
+spikes/*.log
+spikes/*-results.json
