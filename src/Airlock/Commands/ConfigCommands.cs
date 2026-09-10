@@ -19,12 +19,12 @@ internal static class ConfigCommands
     /// <param name="target">
     /// A folder, or nothing for the current directory. Takes precedence over <c>--project</c>.
     /// </param>
-    internal static int Add(AirlockConfigStore store, string? projectOption, IReadOnlyList<string> args)
+    internal static int Create(AirlockConfigStore store, string? projectOption, IReadOnlyList<string> args)
     {
         var parsed = VerbCli
-            .For(ReservedVerbs.Add, args, "Register a folder as an airlock, without opening it.")
-            .Example("airlock add", "register this folder")
-            .Example("airlock add S:\\src\\foo", "register another one")
+            .For(ReservedVerbs.Create, args, "Register a folder as an airlock, without opening it.")
+            .Example("airlock create", "register this folder")
+            .Example("airlock create S:\\src\\foo", "register another one")
             .Rest("folder", "the folder to register; defaults to the current directory")
             .TryParse();
 
@@ -42,10 +42,25 @@ internal static class ConfigCommands
             AnsiConsole.MarkupLineInterpolated($"[yellow]![/] {warning}");
         }
 
-        if (config.FindByHost(project.HostPath) is { } existing)
+        if (config.FindContaining(project.HostPath) is { } covering)
         {
+            var (existing, relative) = covering;
+
+            if (relative.Length == 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Already an airlock: {existing.Host} -> {SandboxPaths.ForProject(existing.Name)}[/]");
+
+                return (int)ExitCode.Ok;
+            }
+
+            // Mounting it again would put the same files at two paths in the sandbox.
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Already an airlock: {existing.Host} -> {SandboxPaths.ForProject(existing.Name)}[/]");
+                $"[yellow]![/] {project.HostPath} is already inside the airlock '{existing.Name}'.");
+            var inSandbox = System.IO.Path.Combine(SandboxPaths.ForProject(existing.Name), relative);
+
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]It is in the sandbox at {inSandbox}; 'airlock open' there starts in it.[/]");
 
             return (int)ExitCode.Ok;
         }

@@ -93,7 +93,7 @@ internal static class Program
             ReservedVerbs.Connect => await ConnectDesktopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Stop => await StopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.List => await ListAsync(command.Arguments, cancellationToken).ConfigureAwait(false),
-            ReservedVerbs.Add => ConfigCommands.Add(Config, command.ProjectPath, command.Arguments),
+            ReservedVerbs.Create => ConfigCommands.Create(Config, command.ProjectPath, command.Arguments),
             ReservedVerbs.Remove => ConfigCommands.Remove(
                 Config,
                 command.ProjectPath,
@@ -177,7 +177,16 @@ internal static class Program
         }
 
         var host = new SandboxHost();
-        var state = await WithStatusAsync(host, cancellationToken).ConfigureAwait(false);
+
+        // Same rule as `open`: showing the window of a sandbox that is not running would mean
+        // booting one, which is `start`'s job.
+        if (await host.GetStateAsync(cancellationToken).ConfigureAwait(false) is not { } state)
+        {
+            Fail("The sandbox is not running.");
+            AnsiConsole.MarkupLine("Start it with '[bold]airlock start[/]'; that shows the desktop too.");
+
+            return (int)ExitCode.Preflight;
+        }
 
         await host.OpenDesktopAsync(state, cancellationToken).ConfigureAwait(false);
 
@@ -220,41 +229,67 @@ internal static class Program
             AnsiConsole.MarkupLineInterpolated($"[yellow]![/] {warning}");
         }
 
+        var config = Config.LoadOrCreate();
+
+        // A dry run has to resolve the airlock first, or it reports where the folder would have gone
+        // under the old rule rather than where it will actually open.
         if (command.DryRun)
         {
-            return DryRun(project, toolCommand);
-        }
-
-        var config = Config.LoadOrCreate();
-        var airlock = config.FindByHost(project.HostPath);
-        var isNew = airlock is null;
-
-        if (airlock is null)
-        {
-            airlock = new AirlockDefinition(project.HostPath, config.AllocateName(project.Name));
-            config.Airlocks.Add(airlock);
-            Config.Save(config);
+            return DryRun(config, project, toolCommand);
         }
 
         var host = new SandboxHost();
+
+        // Checked before anything is written down: starting the sandbox takes a minute and a half
+        // and puts a window on screen, so it stays something you ask for. Failing here rather than
+        // booting also means `open` does not quietly create an airlock for a command that then
+        // cannot run.
+        if (await host.GetStateAsync(cancellationToken).ConfigureAwait(false) is not { } state)
+        {
+            Fail("The sandbox is not running.");
+            AnsiConsole.MarkupLine("Start it with '[bold]airlock start[/]', then open this folder in it.");
+
+            return (int)ExitCode.Preflight;
+        }
+
+        // A folder inside an airlock is already in the sandbox; opening it there beats mounting the
+        // same files a second time under a second name.
+        var (airlock, relative) = config.FindContaining(project.HostPath) is { } found
+            ? (found.Airlock, found.Relative)
+            : (Create(config, project), string.Empty);
 
         if (IsAgent(toolCommand))
         {
             host.EnsureAgent(new Progress<string>(m => AnsiConsole.MarkupLineInterpolated($"[dim]{m}[/]")));
         }
 
-        var state = await WithStatusAsync(host, cancellationToken).ConfigureAwait(false);
-        var sandboxPath = await host.AttachAsync(state, airlock, cancellationToken).ConfigureAwait(false);
+        // Always the airlock's own root: the mount is the airlock, and a subfolder rides along.
+        var mounted = await host.AttachAsync(state, airlock, cancellationToken).ConfigureAwait(false);
+        var openAt = relative.Length == 0 ? mounted : System.IO.Path.Combine(mounted, relative);
 
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]{(isNew ? "Added " : string.Empty)}{project.HostPath} -> {sandboxPath} (read-write)[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]{project.HostPath} -> {openAt} (read-write)[/]");
 
-        await host.OpenAsync(state, sandboxPath, toolCommand, cancellationToken).ConfigureAwait(false);
+        await host.OpenAsync(state, openAt, toolCommand, cancellationToken).ConfigureAwait(false);
 
         AnsiConsole.MarkupLineInterpolated(
             $"Opened {(toolCommand.Count == 0 ? "a shell" : string.Join(' ', toolCommand))} in the sandbox.");
 
         return (int)ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// Creates an airlock for a folder that is not inside one already, and says so.
+    /// </summary>
+    private static AirlockDefinition Create(AirlockConfig config, ResolvedProject project)
+    {
+        var airlock = new AirlockDefinition(project.HostPath, config.AllocateName(project.Name));
+
+        config.Airlocks.Add(airlock);
+        Config.Save(config);
+
+        AnsiConsole.MarkupLineInterpolated($"[dim]Created airlock '{airlock.Name}'.[/]");
+
+        return airlock;
     }
 
     /// <summary>The agent CLI is staged on first use rather than shipped in every sandbox.</summary>
@@ -290,11 +325,37 @@ internal static class Program
         return state!;
     }
 
-    private static int DryRun(ResolvedProject project, IReadOnlyList<string> command)
+    private static int DryRun(AirlockConfig config, ResolvedProject project, IReadOnlyList<string> command)
     {
-        AnsiConsole.MarkupLine("[bold]Project[/]");
-        AnsiConsole.MarkupLineInterpolated(
-            $"  {project.HostPath} -> {SandboxPaths.ForProject(project.Name)} (read-write)");
+        AnsiConsole.MarkupLine("[bold]Airlock[/]");
+
+        if (config.FindContaining(project.HostPath) is { } covering)
+        {
+            var (existing, relative) = covering;
+            var openAt = relative.Length == 0
+                ? SandboxPaths.ForProject(existing.Name)
+                : System.IO.Path.Combine(SandboxPaths.ForProject(existing.Name), relative);
+
+            AnsiConsole.MarkupLineInterpolated($"  {project.HostPath} -> {openAt} (read-write)");
+
+            if (relative.Length == 0)
+            {
+                AnsiConsole.MarkupLineInterpolated($"  [dim]the airlock '{existing.Name}'[/]");
+            }
+            else
+            {
+                // Not "already mounted": a dry run works with the sandbox stopped, where it is
+                // configured rather than mounted.
+                AnsiConsole.MarkupLineInterpolated(
+                    $"  [dim]inside the airlock '{existing.Name}', so nothing new is created[/]");
+            }
+        }
+        else
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"  {project.HostPath} -> {SandboxPaths.ForProject(config.AllocateName(project.Name))} (read-write)");
+            AnsiConsole.MarkupLine("  [dim]a new airlock, which opening would create[/]");
+        }
 
         AnsiConsole.MarkupLine("[bold]Command[/]");
         AnsiConsole.MarkupLineInterpolated(

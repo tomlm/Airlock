@@ -46,8 +46,8 @@ airlock start               boot with every configured tool and airlock mounted,
 airlock stop [--force]      destroy the sandbox
 airlock list                every airlock, and whether it is open right now
 airlock open [tool ...]     open this folder as an airlock and launch a tool in it, or a shell
-airlock add [-p:<path>]     register a folder as an airlock without opening it
-airlock remove              unregister one
+airlock create [folder]     create an airlock without opening it
+airlock remove [name|folder] unregister one
 airlock tools               list the read-only mounts that land on PATH
 airlock tools add <path> [id]
 airlock tools remove <id>
@@ -55,8 +55,12 @@ airlock tools refresh       re-probe the auto-detected toolchains
 airlock connect             reopen the desktop window
 ```
 
-`airlock open` in a folder that is not yet an airlock adds it and mounts it, so a new checkout is one
-command rather than two.
+`airlock open` needs the sandbox already running — starting one takes a minute and a half and puts a
+window on screen, so that stays something you ask for with `airlock start`.
+
+In a folder that is not yet an airlock, `open` creates one, so a new checkout is one command rather
+than two. In a folder *inside* an existing airlock it does not — that folder is already in the
+sandbox, so it simply opens there: from `S:\srcoo	ests` you land in `C:irlockoo	ests`.
 
 Options belong to Airlock only *before* the verb, so `airlock open claude --resume` forwards
 `--resume` to Claude while `airlock --dry-run open claude` is Airlock's own flag. Because the command

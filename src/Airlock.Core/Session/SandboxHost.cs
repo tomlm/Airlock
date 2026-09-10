@@ -225,7 +225,7 @@ public sealed class SandboxHost(
             await WaitForBootAsync(sandboxId, progress, cancellationToken).ConfigureAwait(false);
 
             Report(progress, SandboxPhase.Provisioning, "Setting up tools and paths");
-            await ProvisionAsync(sandboxId, cancellationToken).ConfigureAwait(false);
+            await ProvisionAsync(sandboxId, progress, cancellationToken).ConfigureAwait(false);
 
             var state = new SandboxState
             {
@@ -300,36 +300,117 @@ public sealed class SandboxHost(
     /// <c>wsb exec</c> blocks until the script exits but says nothing about how it went, so the
     /// answer comes from the file the script writes into the shared folder.
     /// </remarks>
-    private async Task ProvisionAsync(string sandboxId, CancellationToken cancellationToken)
+    private async Task ProvisionAsync(
+        string sandboxId,
+        IProgress<(SandboxPhase, string)>? progress,
+        CancellationToken cancellationToken)
     {
         TryDelete(_layout.ReadyPath);
+        TryDelete(_layout.PhasePath);
 
-        await _wsb.ExecAsync(
+        // Deliberately not awaited yet. `wsb exec` blocks until the script exits, so awaiting it
+        // first would mean a hung script hangs here with no timeout and nothing on screen - the
+        // deadline below would not even start counting. Watching for the verdict while the script
+        // runs is what makes a stuck step reportable.
+        var exec = _wsb.ExecAsync(
             sandboxId,
             $"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {SandboxPaths.SetupScript}",
             WsbRunAs.System,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            cancellationToken: cancellationToken);
 
-        var deadline = DateTimeOffset.UtcNow.AddMinutes(3);
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(5);
+        string? step = null;
 
         while (!File.Exists(_layout.ReadyPath))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            if (ReadStep() is { } current && current != step)
+            {
+                step = current;
+                Report(progress, SandboxPhase.Provisioning, $"Setting up tools and paths - {step}");
+            }
+
+            if (exec.IsCompleted)
+            {
+                // The script has exited. Give the file a moment to land before calling it a failure.
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                break;
+            }
+
             if (DateTimeOffset.UtcNow > deadline)
             {
-                throw new SessionException("Provisioning never reported back." + ReadSetupLog());
+                throw new SessionException(
+                    $"Provisioning has been running for five minutes{Where(step)} and has not " +
+                    "reported back." + await FetchSetupLogAsync(sandboxId, cancellationToken).ConfigureAwait(false));
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+        }
+
+        // Surfaces anything wsb itself threw, now that we are no longer racing it.
+        await exec.ConfigureAwait(false);
+
+        if (!File.Exists(_layout.ReadyPath))
+        {
+            throw new SessionException(
+                $"Provisioning stopped{Where(step)} without reporting back." +
+                await FetchSetupLogAsync(sandboxId, cancellationToken).ConfigureAwait(false));
         }
 
         var verdict = await File.ReadAllTextAsync(_layout.ReadyPath, cancellationToken).ConfigureAwait(false);
 
         if (!verdict.Contains("\"ok\":true", StringComparison.OrdinalIgnoreCase))
         {
-            throw new SessionException($"Provisioning failed: {verdict.Trim()}{ReadSetupLog()}");
+            throw new SessionException(
+                $"Provisioning failed{Where(step)}: {verdict.Trim()}" +
+                await FetchSetupLogAsync(sandboxId, cancellationToken).ConfigureAwait(false));
         }
+    }
+
+    /// <summary>The step the guest last reported, if it got far enough to report one.</summary>
+    private string? ReadStep()
+    {
+        try
+        {
+            return File.Exists(_layout.PhasePath)
+                ? File.ReadAllText(_layout.PhasePath).Trim() is { Length: > 0 } s ? s : null
+                : null;
+        }
+        catch (IOException)
+        {
+            // Caught mid-write by the guest; the next poll will get it.
+            return null;
+        }
+    }
+
+    private static string Where(string? step) => step is null ? string.Empty : $" at '{step}'";
+
+    /// <summary>
+    /// Brings the setup log back from the guest.
+    /// </summary>
+    /// <remarks>
+    /// The log lives outside the shared folder, so on a hang it has to be fetched deliberately -
+    /// which still works, because a wedged script does not stop <c>wsb exec</c> starting another
+    /// process. On a clean failure setup.ps1 has already copied it, and this is a no-op.
+    /// </remarks>
+    private async Task<string> FetchSetupLogAsync(string sandboxId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _wsb.ExecAsync(
+                sandboxId,
+                $"cmd.exe /c copy /y {SandboxPaths.SetupLog} {SandboxPaths.Out}\\",
+                WsbRunAs.System,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // Diagnostics are best-effort; failing here must not replace the real error.
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+        }
+
+        return ReadSetupLog();
     }
 
     private string ReadSetupLog()

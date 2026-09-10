@@ -96,9 +96,49 @@ public sealed class AirlockConfig
     [JsonIgnore]
     public IEnumerable<string> AirlockNames => Airlocks.Select(a => a.Name);
 
-    /// <summary>Finds the airlock covering a host path, if one is configured.</summary>
+    /// <summary>Finds the airlock at exactly this host path, if one is configured.</summary>
     public AirlockDefinition? FindByHost(string hostPath) =>
         Airlocks.FirstOrDefault(a => a.Host.Equals(hostPath, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Finds the airlock this path already lives inside, and how far down it sits.
+    /// </summary>
+    /// <remarks>
+    /// A folder inside an airlock is already in the sandbox - mounting it again would put the same
+    /// files at two paths, which is confusing rather than useful. Working in a subfolder should
+    /// simply start there, so this reports the airlock plus the relative remainder to append.
+    /// The longest match wins, so a nested airlock beats its parent.
+    /// </remarks>
+    /// <returns>The airlock and the path below it, or null when nothing covers this path.</returns>
+    public (AirlockDefinition Airlock, string Relative)? FindContaining(string hostPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostPath);
+
+        var best = Airlocks
+            .Where(a => Covers(a.Host, hostPath))
+            .OrderByDescending(a => a.Host.Length)
+            .FirstOrDefault();
+
+        if (best is null)
+        {
+            return null;
+        }
+
+        var relative = hostPath.Length == best.Host.TrimEnd('\\').Length
+            ? string.Empty
+            : hostPath[(best.Host.TrimEnd('\\').Length + 1)..];
+
+        return (best, relative);
+    }
+
+    /// <summary>Whether <paramref name="path"/> is the folder itself or something beneath it.</summary>
+    private static bool Covers(string folder, string path)
+    {
+        var root = folder.TrimEnd('\\');
+
+        return path.Equals(root, StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Picks a sandbox folder name that no other airlock is using.

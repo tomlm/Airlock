@@ -94,7 +94,7 @@ public class CommandLineTests
     }
 
     [Theory]
-    [InlineData("add")]
+    [InlineData("create")]
     [InlineData("remove")]
     public void AirlockManagementVerbs_AreRecognised(string verb)
     {

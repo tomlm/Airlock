@@ -38,6 +38,52 @@ public class AirlockLookupTests
     }
 
     [Fact]
+    public void AFolderInsideAnAirlock_ResolvesToItRatherThanANewOne()
+    {
+        // Otherwise `airlock open` in a subfolder mounts the same files a second time, under a
+        // second name - which is how 'spikes' ended up mounted both as C:\airlock\Airlock\spikes
+        // and as C:\airlock\spikes.
+        var found = Config().FindContaining(@"S:\github\Airlock\src\Airlock");
+
+        Assert.NotNull(found);
+        Assert.Equal("Airlock", found.Value.Airlock.Name);
+        Assert.Equal(@"src\Airlock", found.Value.Relative);
+    }
+
+    [Fact]
+    public void TheAirlockItself_HasNothingBelowIt()
+    {
+        var found = Config().FindContaining(@"S:\github\Airlock");
+
+        Assert.NotNull(found);
+        Assert.Equal(string.Empty, found.Value.Relative);
+    }
+
+    [Fact]
+    public void TheNearestAirlockWins()
+    {
+        // spikes sits inside Airlock, so a path under spikes belongs to spikes.
+        var found = Config().FindContaining(@"S:\github\Airlock\spikes\logs");
+
+        Assert.NotNull(found);
+        Assert.Equal("spikes", found.Value.Airlock.Name);
+        Assert.Equal("logs", found.Value.Relative);
+    }
+
+    [Fact]
+    public void AFolderOutsideEveryAirlock_IsNotCovered()
+    {
+        Assert.Null(Config().FindContaining(@"S:\github\Other"));
+    }
+
+    [Fact]
+    public void ASiblingWithASharedPrefix_IsNotMistakenForAChild()
+    {
+        // "S:\github\Airlock2" starts with "S:\github\Airlock" as a string but is not inside it.
+        Assert.Null(Config().FindContaining(@"S:\github\Airlock2"));
+    }
+
+    [Fact]
     public void NamesAreUniqueAcrossAirlocks()
     {
         // The name is what identifies one on the command line, so two sharing it would be ambiguous.

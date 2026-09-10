@@ -46,6 +46,11 @@ public sealed class SandboxLayout
     /// <summary>Used to prove a running sandbox is ours, now that there is no key to try.</summary>
     public string ProbePath => System.IO.Path.Combine(OutDirectory, "probe.txt");
 
+    /// <summary>
+    /// The step provisioning last reported, so a long or stuck setup can say where it is.
+    /// </summary>
+    public string PhasePath => System.IO.Path.Combine(OutDirectory, "phase.txt");
+
     public string PrivateKeyPath => System.IO.Path.Combine(KeyDirectory, "id_ed25519");
 
     public string PublicKeyPath => PrivateKeyPath + ".pub";

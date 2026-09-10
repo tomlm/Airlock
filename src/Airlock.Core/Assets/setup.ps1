@@ -12,7 +12,15 @@ $out = 'C:\airlock\_out_'
 New-Item -ItemType Directory -Force -Path 'C:\airlock\_setup_' | Out-Null
 Start-Transcript -Path 'C:\airlock\_setup_\setup.log' -Force | Out-Null
 $phase = 'start'
-function Step($n) { $script:phase = $n; Write-Host "== AIRLOCK STEP: $n" }
+
+# The host cannot see this script's output - wsb exec returns nothing - so each step is also
+# written into the shared folder, which is what lets `airlock start` show where it has got to and
+# name the step it was on if it never finishes.
+function Step($n) {
+  $script:phase = $n
+  Write-Host "== AIRLOCK STEP: $n"
+  try { Set-Content -Path (Join-Path $out 'phase.txt') -Value $n -ErrorAction SilentlyContinue } catch { }
+}
 
 try {
   Step 'machine-env'

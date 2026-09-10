@@ -25,7 +25,7 @@ public static class ReservedVerbs
     public const string List = "list";
 
     /// <summary>Register a folder as an airlock without opening it.</summary>
-    public const string Add = "add";
+    public const string Create = "create";
 
     /// <summary>Unregister an airlock. It stays mounted until the sandbox is stopped.</summary>
     public const string Remove = "remove";
@@ -52,7 +52,7 @@ public static class ReservedVerbs
         (Start, "bring the sandbox up with every configured tool and airlock"),
         (Stop, "destroy the sandbox; --force stops one it cannot prove is its own"),
         (List, "every airlock, and whether it is open right now"),
-        (Add, "register a folder as an airlock without opening it"),
+        (Create, "register a folder as an airlock without opening it"),
         (Remove, "unregister one by name or folder; it stays mounted until stop"),
         (Tools, "list, add or remove the read-only mounts that land on PATH"),
         (Connect, "reopen the sandbox desktop window"),
