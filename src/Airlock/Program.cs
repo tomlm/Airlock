@@ -62,11 +62,15 @@ internal static class Program
                 return (int)ExitCode.Usage;
 
             case InvocationKind.Help:
-                // CShell's TryParse already printed the usage text when --help asked for it.
+                // CShell's TryParse already printed the usage text when --help asked for it, but it
+                // has no notion of subcommands, so what each verb does is appended here.
                 if (!command.AlreadyReported)
                 {
                     Console.WriteLine(command.UsageText);
                 }
+
+                Console.WriteLine();
+                Console.Write(ReservedVerbs.Describe());
 
                 return (int)ExitCode.Ok;
 

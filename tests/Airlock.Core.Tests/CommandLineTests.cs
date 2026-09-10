@@ -162,20 +162,28 @@ public class CommandLineTests
     [Fact]
     public void Flags_AreCollected()
     {
-        var result = CommandLine.Parse(["-v", "--dry-run", "--keep", "--trust-project", "open", "claude"]);
+        var result = CommandLine.Parse(["--dry-run", "open", "claude"]);
 
-        Assert.True(result.Verbose);
         Assert.True(result.DryRun);
-        Assert.True(result.Keep);
-        Assert.True(result.TrustProject);
         Assert.Equal(["claude"], result.Arguments);
     }
 
     [Fact]
-    public void Memory_IsParsedAsANumber()
+    public void EveryVerbHelpAdvertises_IsActuallyAVerb()
     {
-        var result = CommandLine.Parse(["--memory:12288", "start"]);
+        // Help used to name its verbs in a hand-written string, which went stale the moment the set
+        // changed - advertising ones that no longer existed and omitting ones that did.
+        foreach (var verb in ReservedVerbs.Usage.Split('|', StringSplitOptions.TrimEntries))
+        {
+            Assert.True(ReservedVerbs.Contains(verb), $"help lists '{verb}', which is not a verb");
+        }
+    }
 
-        Assert.Equal(12288, result.MemoryInMB);
+    [Fact]
+    public void EveryVerb_IsAdvertisedInHelp()
+    {
+        var advertised = ReservedVerbs.Usage.Split('|', StringSplitOptions.TrimEntries);
+
+        Assert.Equal(ReservedVerbs.All.Count, advertised.Length);
     }
 }

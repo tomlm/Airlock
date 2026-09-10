@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Airlock.Cli;
 
 /// <summary>
@@ -36,12 +38,50 @@ public static class ReservedVerbs
 
     public const string Doctor = "doctor";
 
-    private static readonly HashSet<string> Set = new(StringComparer.OrdinalIgnoreCase)
-    {
-        Open, Start, Stop, List, Add, Remove, Tools, Connect, Doctor,
-    };
+    /// <summary>
+    /// Every verb with its one-line summary, in the order help should list them: the ones you reach
+    /// for first, then the ones that manage what the sandbox is made of.
+    /// </summary>
+    /// <remarks>
+    /// Help is generated from this rather than repeating it in prose, because the two drifted apart
+    /// the moment the verb set changed - the usage line went on advertising verbs that no longer
+    /// existed while omitting ones that did.
+    /// </remarks>
+    private static readonly (string Verb, string Summary)[] Described =
+    [
+        (Open, "open this folder as an airlock and run a tool in it, or a shell"),
+        (Start, "bring the sandbox up with every configured tool and airlock"),
+        (Stop, "destroy the sandbox; --force stops one it cannot prove is its own"),
+        (List, "the sandbox, and every airlock open in it"),
+        (Add, "register this folder as an airlock without opening it"),
+        (Remove, "unregister it; it stays mounted until the sandbox stops"),
+        (Tools, "list, add or remove the read-only mounts that land on PATH"),
+        (Connect, "reopen the sandbox desktop window"),
+        (Doctor, "check the host for whatever Airlock needs"),
+    ];
+
+    public static IReadOnlyList<string> All { get; } = [.. Described.Select(d => d.Verb)];
+
+    private static readonly HashSet<string> Set = new(All, StringComparer.OrdinalIgnoreCase);
 
     public static bool Contains(string token) => Set.Contains(token);
 
-    public static IReadOnlyCollection<string> All => Set;
+    /// <summary>The verbs on one line, for the usage summary.</summary>
+    public static string Usage => string.Join(" | ", All);
+
+    /// <summary>The verbs as an aligned block, to print under the generated usage text.</summary>
+    public static string Describe()
+    {
+        var width = Described.Max(d => d.Verb.Length);
+        var sb = new StringBuilder();
+
+        sb.AppendLine("Commands:");
+
+        foreach (var (verb, summary) in Described)
+        {
+            sb.Append("  ").Append(verb.PadRight(width + 2)).AppendLine(summary);
+        }
+
+        return sb.ToString();
+    }
 }
