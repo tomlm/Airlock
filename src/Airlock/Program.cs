@@ -51,12 +51,17 @@ internal static class Program
 
         switch (command.Kind)
         {
-            // CShell's parser has already printed the usage text or the error, so these only pick
-            // an exit code; printing again would duplicate the whole block.
             case InvocationKind.Usage:
+                // CShell prints its own parse errors, but the ones Airlock raises still need saying.
+                if (!command.AlreadyReported)
+                {
+                    Fail(command.Error ?? "Unusable command line.");
+                }
+
                 return (int)ExitCode.Usage;
 
             case InvocationKind.Help:
+                // CShell's TryParse already printed the usage text when --help asked for it.
                 if (!command.AlreadyReported)
                 {
                     Console.WriteLine(command.UsageText);
@@ -71,9 +76,6 @@ internal static class Program
             case InvocationKind.Verb:
                 return await DispatchVerbAsync(command, cancellationToken).ConfigureAwait(false);
 
-            case InvocationKind.Passthrough:
-                return await OpenSessionAsync(command, command.Arguments, cancellationToken).ConfigureAwait(false);
-
             default:
                 throw new InvalidOperationException($"Unhandled invocation kind '{command.Kind}'.");
         }
@@ -86,9 +88,9 @@ internal static class Program
             ReservedVerbs.Connect => await ConnectDesktopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Stop => await StopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
-            ReservedVerbs.Run => await OpenSessionAsync(command, command.Arguments, cancellationToken)
-                .ConfigureAwait(false),
-            ReservedVerbs.Shell => await OpenSessionAsync(command, [], cancellationToken).ConfigureAwait(false),
+            // No arguments after the verb means a shell: you have opened the airlock and stepped in.
+            ReservedVerbs.Open or ReservedVerbs.Run =>
+                await OpenSessionAsync(command, command.Arguments, cancellationToken).ConfigureAwait(false),
             _ => NotYet(command.Verb!),
         };
 
@@ -131,7 +133,7 @@ internal static class Program
 
         if (state.Folders.Count > 0)
         {
-            AnsiConsole.MarkupLine("[dim]Attached folders are visible under C:\\work.[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]Open projects are visible under {SandboxPaths.Root}.[/]");
         }
 
         // Worth stating rather than letting someone discover it by trying to sign in: the window is
@@ -213,7 +215,8 @@ internal static class Program
     private static int DryRun(ResolvedProject project, IReadOnlyList<string> command)
     {
         AnsiConsole.MarkupLine("[bold]Project[/]");
-        AnsiConsole.MarkupLineInterpolated($"  {project.HostPath} -> C:\\work\\{project.Name} (read-write)");
+        AnsiConsole.MarkupLineInterpolated(
+            $"  {project.HostPath} -> {SandboxPaths.ForProject(project.Name)} (read-write)");
 
         AnsiConsole.MarkupLine("[bold]Command[/]");
         AnsiConsole.MarkupLineInterpolated(

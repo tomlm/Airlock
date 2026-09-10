@@ -14,12 +14,12 @@ Write-Host "`n=== 1. stop with nothing running ==="
 & $exe stop 2>&1 | Out-String | Write-Host
 
 Write-Host "`n=== 2. start a session, then stop it normally ==="
-& $exe -- powershell -Command "'up'" 2>&1 | Out-String | Write-Host
+& $exe open powershell -Command "'up'" 2>&1 | Out-String | Write-Host
 & $exe stop 2>&1 | Out-String | Write-Host
 Write-Host "wsb after: $((wsb list --raw | Out-String).Trim() -replace '\s+',' ')"
 
 Write-Host "`n=== 3. recreate the dead end: sandbox alive, session key destroyed ==="
-& $exe -- powershell -Command "'up again'" 2>&1 | Out-String | Write-Host
+& $exe open powershell -Command "'up again'" 2>&1 | Out-String | Write-Host
 $id = (Get-Content "$env:LOCALAPPDATA\Airlock\sandbox.json" -Raw | ConvertFrom-Json).Id
 Write-Host "sandbox: $id"
 
@@ -32,7 +32,7 @@ Write-Host "`n--- plain stop should refuse and point at --force ---"
 & $exe stop 2>&1 | Out-String | Write-Host
 
 Write-Host "`n--- start should also refuse (this is the trap) ---"
-& $exe -- powershell -Command "'should not get here'" 2>&1 | Out-String | Write-Host
+& $exe open powershell -Command "'should not get here'" 2>&1 | Out-String | Write-Host
 
 Write-Host "`n--- stop --force should clear it (stdin redirected, so no prompt) ---"
 & $exe stop --force 2>&1 | Out-String | Write-Host

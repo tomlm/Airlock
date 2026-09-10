@@ -21,7 +21,7 @@ public sealed class SandboxLayout
 
     public string Root { get; }
 
-    /// <summary>Mapped read-only to <c>C:\airlock\session</c>: setup script, public key, env.</summary>
+    /// <summary>Mapped read-only into the sandbox: setup script, public key, environment.</summary>
     public string ShareDirectory => System.IO.Path.Combine(Root, "share");
 
     /// <summary>Never mapped. The private key would otherwise be readable by the agent.</summary>

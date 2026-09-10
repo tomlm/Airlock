@@ -44,8 +44,6 @@ public sealed class SandboxHost(
     SandboxStateStore? store = null,
     SandboxLayout? layout = null)
 {
-    private const string WorkRoot = @"C:\work";
-
     private readonly IWsbClient _wsb = wsb ?? new WsbClient();
     private readonly ToolsCache _tools = tools ?? new ToolsCache();
     private readonly SandboxStateStore _store = store ?? new SandboxStateStore();
@@ -95,7 +93,7 @@ public sealed class SandboxHost(
     /// <remarks>
     /// <para>
     /// There is no way to ask <c>wsb</c> what a sandbox has mounted - <c>list</c> reports only ids,
-    /// and <c>exec</c> returns neither output nor the remote exit code, so "does C:\airlock\tools
+    /// and <c>exec</c> returns neither output nor the remote exit code, so "does the tools folder
     /// exist" cannot be answered from the host. The SSH key can, and it is better evidence: the
     /// keypair is generated per sandbox and its public half is written only into that sandbox's
     /// <c>administrators_authorized_keys</c>. If it authenticates, this Airlock install provisioned
@@ -199,8 +197,8 @@ public sealed class SandboxHost(
                 MemoryInMB = memoryInMB,
                 MappedFolders =
                 [
-                    new MappedFolder(_tools.Root, @"C:\airlock\tools", ReadOnly: true),
-                    new MappedFolder(_layout.ShareDirectory, @"C:\airlock\session", ReadOnly: true),
+                    new MappedFolder(_tools.Root, SandboxPaths.Tools, ReadOnly: true),
+                    new MappedFolder(_layout.ShareDirectory, SandboxPaths.Session, ReadOnly: true),
                     .. DotnetMount(),
                 ],
             };
@@ -222,7 +220,7 @@ public sealed class SandboxHost(
             Report(progress, SandboxPhase.Provisioning, "Installing SSH and toolchain (about a minute)");
             await _wsb.ExecAsync(
                 sandboxId,
-                @"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\airlock\session\setup.ps1",
+                $"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {SandboxPaths.SetupScript}",
                 WsbRunAs.System,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -298,12 +296,12 @@ public sealed class SandboxHost(
     /// </summary>
     private static string AllocateSandboxPath(SandboxState state, string name)
     {
-        var candidate = System.IO.Path.Combine(WorkRoot, name);
+        var candidate = SandboxPaths.ForProject(name);
         var suffix = 2;
 
         while (state.Folders.Any(f => f.SandboxPath.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
         {
-            candidate = System.IO.Path.Combine(WorkRoot, $"{name}-{suffix}");
+            candidate = SandboxPaths.ForProject($"{name}-{suffix}");
             suffix++;
         }
 
@@ -406,7 +404,7 @@ public sealed class SandboxHost(
             return command;
         }
 
-        return new List<string>(command) { [0] = @"C:\airlock\tools\claude\claude.exe" };
+        return new List<string>(command) { [0] = SandboxPaths.ClaudeExe };
     }
 
     private static bool IsClaude(IReadOnlyList<string> command) =>
@@ -421,20 +419,20 @@ public sealed class SandboxHost(
 
         if (Directory.Exists(dotnet))
         {
-            yield return new MappedFolder(dotnet, @"C:\airlock\dotnet", ReadOnly: true);
+            yield return new MappedFolder(dotnet, SandboxPaths.Dotnet, ReadOnly: true);
         }
     }
 
     private static List<string> BuildPathPrepend() =>
     [
-        @"C:\airlock\dotnet",
-        @"C:\airlock\tools\claude",
-        @"C:\airlock\tools\OpenSSH-Win64",
+        SandboxPaths.Dotnet,
+        SandboxPaths.Claude,
+        SandboxPaths.OpenSsh,
     ];
 
     private static Dictionary<string, string> BuildMachineEnv() => new(StringComparer.Ordinal)
     {
-        ["DOTNET_ROOT"] = @"C:\airlock\dotnet",
+        ["DOTNET_ROOT"] = SandboxPaths.Dotnet,
         ["DOTNET_NOLOGO"] = "1",
         ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
         ["POWERSHELL_TELEMETRY_OPTOUT"] = "1",
@@ -564,12 +562,13 @@ public sealed class SandboxHost(
     {
         try
         {
-            await _wsb.ShareAsync(id, _layout.OutDirectory, @"C:\airlock\out", allowWrite: true, cancellationToken)
+            await _wsb.ShareAsync(id, _layout.OutDirectory, SandboxPaths.Out, allowWrite: true, cancellationToken)
                 .ConfigureAwait(false);
 
             await _wsb.ExecAsync(
                 id,
-                @"cmd.exe /c copy C:\airlock\setup.log C:\airlock\out\ & copy C:\airlock\ready.json C:\airlock\out\",
+                $"cmd.exe /c copy {SandboxPaths.SetupLog} {SandboxPaths.Out}\\ & "
+                + $"copy {SandboxPaths.SetupResult} {SandboxPaths.Out}\\",
                 WsbRunAs.System,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 

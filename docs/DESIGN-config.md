@@ -104,8 +104,8 @@ First run prints:
 
 ```
 This project's .airlock.json requests extra host access:
-  read-only   S:\shared\test-fixtures        -> C:\airlock\p\test-fixtures
-  read-write  S:\scratch\somerepo-artifacts  -> C:\work\.artifacts
+  read-only   S:\shared\test-fixtures        -> C:\airlock\test-fixtures
+  read-write  S:\scratch\somerepo-artifacts  -> C:irlock\somerepo-artifacts
 
 The agent can read everything mapped read-only and modify everything mapped
 read-write. Allow this for S:\github\SomeRepo?  [y/N]

@@ -11,13 +11,13 @@ $probe = Join-Path $probeDir '_who.txt'
 Remove-Item $probe -Force -ErrorAction SilentlyContinue
 
 function Try-ExistingLogin($id) {
-    & wsb exec --id $id -r ExistingLogin -c "cmd.exe /c whoami > C:\work\spikes\_who.txt" 2>&1 | Out-Null
+    & wsb exec --id $id -r ExistingLogin -c "cmd.exe /c whoami > C:\airlock\spikes\_who.txt" 2>&1 | Out-Null
     return (Test-Path $probe)
 }
 
 Write-Host "`n=== ensure a sandbox with a writable folder attached ==="
 Set-Location $probeDir
-& $exe -- powershell -Command "'attached' | Write-Output" 2>&1 | Out-String | Write-Host
+& $exe open powershell -Command "'attached' | Write-Output" 2>&1 | Out-String | Write-Host
 
 $id = (Get-Content "$env:LOCALAPPDATA\Airlock\sandbox.json" -Raw | ConvertFrom-Json).Id
 Write-Host "sandbox: $id"

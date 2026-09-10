@@ -20,12 +20,10 @@ public sealed class ProjectValidationException(string message) : Exception(messa
 /// <remarks>
 /// Windows Sandbox needs a real local path, and refuses to map anything else. Links are followed
 /// and network drives rejected up front, so the failure arrives as a sentence the user can act on
-/// rather than as a sandbox with a mysteriously empty <c>C:\work</c>.
+/// rather than as a sandbox with a mysteriously empty project folder.
 /// </remarks>
 public static class ProjectResolver
 {
-    private const string WorkRoot = @"C:\work";
-
     public static ResolvedProject Resolve(string? requestedPath)
     {
         var path = string.IsNullOrWhiteSpace(requestedPath)
@@ -54,7 +52,7 @@ public static class ProjectResolver
 
         return new ResolvedProject(
             real,
-            System.IO.Path.Combine(WorkRoot, name),
+            Airlock.Sandbox.SandboxPaths.ForProject(name),
             name,
             CollectWarnings(real, path));
     }
@@ -176,8 +174,8 @@ public static class ProjectResolver
 
     /// <summary>
     /// Keeps the sandbox path predictable and free of characters that would need quoting in the
-    /// remote command. No collision check is needed: the project always lands under
-    /// <c>C:\work</c>, and Airlock's own mounts all live under <c>C:\airlock</c>.
+    /// remote command. Projects share a root with Airlock's own mounts, which are wrapped in
+    /// underscores, so a name shaped like one of those gets nudged out of the way.
     /// </summary>
     private static string SanitiseName(string name)
     {
@@ -188,7 +186,10 @@ public static class ProjectResolver
             cleaned = "project";
         }
 
-        return cleaned.Length > 64 ? cleaned[..64] : cleaned;
+        cleaned = cleaned.Length > 64 ? cleaned[..64] : cleaned;
+
+        // _tools_ and friends belong to Airlock; a project called that would shadow one.
+        return Airlock.Sandbox.SandboxPaths.IsReservedName(cleaned) ? cleaned.Trim('_') : cleaned;
     }
 
     private static bool IsUnder(string path, string parent) =>

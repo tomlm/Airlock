@@ -3,9 +3,9 @@ using Airlock.Cli;
 namespace Airlock.Tests;
 
 /// <summary>
-/// The top-level grammar. The behaviour that matters most is the boundary: everything from the
-/// first positional token onward belongs to the wrapped command, so a switch Airlock also happens
-/// to define is still forwarded rather than swallowed.
+/// The top-level grammar. Every invocation starts with a verb, and the boundary that matters is
+/// that everything after it belongs to the verb - so a switch Airlock also happens to define is
+/// still forwarded to the command being wrapped rather than swallowed.
 /// </summary>
 public class CommandLineTests
 {
@@ -18,40 +18,49 @@ public class CommandLineTests
     }
 
     [Fact]
-    public void BareCommand_IsAPassthrough()
+    public void Open_WithNoCommand_IsAShell()
     {
-        var result = CommandLine.Parse(["claude"]);
+        var result = CommandLine.Parse(["open"]);
 
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
+        Assert.Equal(InvocationKind.Verb, result.Kind);
+        Assert.Equal(ReservedVerbs.Open, result.Verb);
+        Assert.Empty(result.Arguments);
+    }
+
+    [Fact]
+    public void Open_CarriesTheCommand()
+    {
+        var result = CommandLine.Parse(["open", "claude"]);
+
+        Assert.Equal(InvocationKind.Verb, result.Kind);
+        Assert.Equal(ReservedVerbs.Open, result.Verb);
         Assert.Equal(["claude"], result.Arguments);
     }
 
     [Fact]
     public void SwitchesAfterTheCommand_BelongToTheCommand()
     {
-        var result = CommandLine.Parse(["claude", "--resume"]);
+        var result = CommandLine.Parse(["open", "claude", "--resume"]);
 
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
         Assert.Equal(["claude", "--resume"], result.Arguments);
     }
 
     [Fact]
-    public void AirlocksOwnSwitchAfterTheCommand_IsStillForwarded()
+    public void AirlocksOwnSwitchAfterTheVerb_IsStillForwarded()
     {
-        // --project is ours, but only before the command starts. After it, it is Claude's problem.
-        var result = CommandLine.Parse(["claude", "--project:x"]);
+        // --project is ours, but only before the verb. After it, it is Claude's problem.
+        var result = CommandLine.Parse(["open", "claude", "--project:x"]);
 
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
         Assert.Equal(["claude", "--project:x"], result.Arguments);
         Assert.Null(result.ProjectPath);
     }
 
     [Fact]
-    public void OptionsBeforeTheCommand_AreAirlocks()
+    public void OptionsBeforeTheVerb_AreAirlocks()
     {
-        var result = CommandLine.Parse(["--project:S:\\src\\Foo", "claude", "--resume"]);
+        var result = CommandLine.Parse(["--project:S:\\src\\Foo", "open", "claude", "--resume"]);
 
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
+        Assert.Equal(InvocationKind.Verb, result.Kind);
         Assert.Equal("S:\\src\\Foo", result.ProjectPath);
         Assert.Equal(["claude", "--resume"], result.Arguments);
     }
@@ -59,11 +68,20 @@ public class CommandLineTests
     [Fact]
     public void ShortOptionAlias_Works()
     {
-        var result = CommandLine.Parse(["-p:S:\\src\\Foo", "shell"]);
+        var result = CommandLine.Parse(["-p:S:\\src\\Foo", "open"]);
 
         Assert.Equal("S:\\src\\Foo", result.ProjectPath);
+        Assert.Equal(ReservedVerbs.Open, result.Verb);
+    }
+
+    [Fact]
+    public void Run_IsAnAliasForOpen()
+    {
+        var result = CommandLine.Parse(["run", "dotnet", "test"]);
+
         Assert.Equal(InvocationKind.Verb, result.Kind);
-        Assert.Equal(ReservedVerbs.Shell, result.Verb);
+        Assert.Equal(ReservedVerbs.Run, result.Verb);
+        Assert.Equal(["dotnet", "test"], result.Arguments);
     }
 
     [Theory]
@@ -71,7 +89,7 @@ public class CommandLineTests
     [InlineData("stop")]
     [InlineData("doctor")]
     [InlineData("connect")]
-    [InlineData("shell")]
+    [InlineData("start")]
     [InlineData("trust")]
     public void ReservedWord_DispatchesToAirlock(string verb)
     {
@@ -87,57 +105,36 @@ public class CommandLineTests
     {
         var result = CommandLine.Parse(["tools", "update", "--force"]);
 
-        Assert.Equal(InvocationKind.Verb, result.Kind);
         Assert.Equal(ReservedVerbs.Tools, result.Verb);
         Assert.Equal(["update", "--force"], result.Arguments);
     }
 
     [Fact]
-    public void RunVerb_TreatsTheRestAsTheCommand()
+    public void AVerbNameAfterOpen_IsJustACommand()
     {
-        var result = CommandLine.Parse(["run", "dotnet", "test"]);
+        // The reason the grammar requires a verb: this used to need `airlock -- list` to
+        // disambiguate, and now it cannot be ambiguous at all.
+        var result = CommandLine.Parse(["open", "list"]);
 
         Assert.Equal(InvocationKind.Verb, result.Kind);
-        Assert.Equal(ReservedVerbs.Run, result.Verb);
-        Assert.Equal(["dotnet", "test"], result.Arguments);
-    }
-
-    [Fact]
-    public void DoubleDash_RunsAReservedWordInsideTheSandboxInstead()
-    {
-        // The escape hatch for the one real ambiguity in the grammar.
-        var result = CommandLine.Parse(["--", "list"]);
-
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
+        Assert.Equal(ReservedVerbs.Open, result.Verb);
         Assert.Equal(["list"], result.Arguments);
-        Assert.Null(result.Verb);
     }
 
     [Fact]
-    public void DoubleDash_AfterAirlockOptions_StillForces()
+    public void BareCommandWithoutAVerb_IsRejectedWithTheFix()
     {
-        var result = CommandLine.Parse(["--verbose", "--", "doctor", "--all"]);
+        var result = CommandLine.Parse(["claude", "--resume"]);
 
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
-        Assert.True(result.Verbose);
-        Assert.Equal(["doctor", "--all"], result.Arguments);
-    }
-
-    [Fact]
-    public void DoubleDash_AfterTheCommandStarted_IsNotATerminator()
-    {
-        // Here the command is already 'claude', so '--' is just one of its arguments.
-        var result = CommandLine.Parse(["claude", "--", "list"]);
-
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
-        Assert.Equal("claude", result.Arguments[0]);
+        Assert.Equal(InvocationKind.Usage, result.Kind);
+        Assert.Contains("airlock open claude --resume", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
     public void UnknownAirlockSwitch_IsRejectedRatherThanForwarded()
     {
         // Quietly handing a mistyped Airlock flag to the agent would be worse than failing.
-        var result = CommandLine.Parse(["--bogus", "claude"]);
+        var result = CommandLine.Parse(["--bogus", "open", "claude"]);
 
         Assert.Equal(InvocationKind.Usage, result.Kind);
     }
@@ -145,22 +142,20 @@ public class CommandLineTests
     [Fact]
     public void Flags_AreCollected()
     {
-        var result = CommandLine.Parse(["-v", "--dry-run", "--keep", "--trust-project", "claude"]);
+        var result = CommandLine.Parse(["-v", "--dry-run", "--keep", "--trust-project", "open", "claude"]);
 
         Assert.True(result.Verbose);
         Assert.True(result.DryRun);
         Assert.True(result.Keep);
         Assert.True(result.TrustProject);
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
         Assert.Equal(["claude"], result.Arguments);
     }
 
     [Fact]
-    public void ReservedWordAsAnArgumentOfACommand_IsNotAVerb()
+    public void Memory_IsParsedAsANumber()
     {
-        var result = CommandLine.Parse(["dotnet", "list", "package"]);
+        var result = CommandLine.Parse(["--memory:12288", "start"]);
 
-        Assert.Equal(InvocationKind.Passthrough, result.Kind);
-        Assert.Equal(["dotnet", "list", "package"], result.Arguments);
+        Assert.Equal(12288, result.MemoryInMB);
     }
 }

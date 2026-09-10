@@ -5,11 +5,11 @@ machine are the projects you explicitly attach**.
 
 ```powershell
 cd S:\src\MyProject
-airlock claude
+airlock open claude
 ```
 
 That brings up a sandbox, attaches this project to it read-write, and drops you into an interactive
-Claude Code session running in `C:\work\MyProject` — in your own terminal, with your fonts, colours,
+Claude Code session running in `C:irlock\MyProject` — in your own terminal, with your fonts, colours,
 and scrollback. Run `airlock` from another project and it joins the same sandbox. `airlock stop`
 destroys the VM and everything installed in it.
 
@@ -29,10 +29,14 @@ feel. Airlock keeps the ergonomics and takes away the blast radius.
 
 | Host path | In the sandbox | Access |
 |---|---|---|
-| each attached project | `C:\work\<name>` | **read/write** |
-| `C:\Program Files\dotnet` | `C:\airlock\dotnet` | read-only |
-| the agent CLI and OpenSSH | `C:\airlock\tools` | read-only |
-| setup script and the **public** key | `C:\airlock\session` | read-only |
+| each open project | `C:\airlock\<name>` | **read/write** |
+| `C:\Program Files\dotnet` | `C:\airlock\_dotnet_` | read-only |
+| the agent CLI and OpenSSH | `C:\airlock\_tools_` | read-only |
+| setup script and the **public** key | `C:\airlock\_session_` | read-only |
+
+Projects sit directly under `C:\airlock`, so the path inside reads like the one outside:
+`S:\github\foo` becomes `C:\airlock\foo`. Airlock's own folders share that root, so they are wrapped
+in underscores to stay out of the way of anything you might open.
 
 The sandbox's own `C:` is writable but ephemeral, so installs, caches, and scratch files vanish with
 the VM. The session's **private** key is kept in a folder that is never mapped, and is deleted by
@@ -45,14 +49,13 @@ provisions it; every later one finds it already up and just attaches whatever fo
 takes about a second.
 
 ```powershell
-cd S:\src\A ; airlock claude     # boots the sandbox, attaches A, starts Claude
-cd S:\src\B ; airlock shell      # same sandbox, attaches B, opens a shell
-airlock list                     # shows both folders as writable
-airlock stop                     # destroys the VM and detaches everything
+cd S:\src\A ; airlock open claude   # boots the sandbox, opens A, starts Claude
+cd S:\src\B ; airlock open          # same sandbox, opens B, gives you a shell
+airlock list                         # shows both projects as writable
+airlock stop                         # destroys the VM and closes everything
 ```
 
-`airlock start` brings the sandbox up with **no** folders attached, so you can pay the boot cost up
-front.
+`airlock start` brings the sandbox up with **nothing** open, so you can pay the boot cost up front.
 
 If Airlock ever refuses to start *and* refuses to stop - which happens when a sandbox really was
 its own but the session key is gone, so ownership can no longer be proven - `airlock stop --force`
@@ -64,17 +67,16 @@ agent did or working out why a sandbox came up wrong. Note that the window signs
 `WDAGUtilityAccount`, a different Windows account from the `airlock` user your agent sessions run
 as: mapped folders are shared between them, but sign-ins and per-user installs are not.
 
-Worth knowing: attached folders accumulate. Windows Sandbox has no unshare, so once A and B are both
-attached they are writable *at the same time*, and an agent working in A can reach B. `airlock list`
+Worth knowing: open projects accumulate. Windows Sandbox has no unshare, so once A and B are both
+open they are writable *at the same time*, and an agent working in A can reach B. `airlock list`
 is the honest picture of what is currently exposed; `airlock stop` is what resets it.
 
 ## Commands
 
 ```
-airlock <command...>       attach the current project and run a command in the sandbox
-airlock shell              attach the current project and open an interactive shell
-airlock start              start the sandbox with no folders attached, and leave it running
-airlock list               show the sandbox and every folder currently attached
+airlock open [command...]  open this project in the sandbox and run a command, or a shell
+airlock start              start the sandbox with nothing open, and leave it running
+airlock list               show the sandbox and every project currently open
 airlock stop [--force]     destroy the sandbox and detach everything
 airlock connect            open the sandbox desktop window (looking around, debugging)
 airlock doctor             check Sandbox, CmService, wsb.exe, toolchains
@@ -82,11 +84,12 @@ airlock tools update       refresh the host-side tools folder
 airlock trust              manage per-project .airlock.json approvals
 ```
 
-Options are Airlock's only *before* the command starts, so `airlock claude --resume` forwards
-`--resume` to Claude. Use `--` when a command collides with one of Airlock's verbs:
+Options are Airlock's only *before* the verb, so `airlock open claude --resume` forwards `--resume`
+to Claude, and `airlock --dry-run open claude` is Airlock's own flag. Because the command always
+follows `open`, there is nothing to disambiguate:
 
 ```powershell
-airlock -- list            # runs `list` inside the sandbox
+airlock open list          # runs `list` inside the sandbox
 ```
 
 Following [CShell](https://github.com/tomlm/CShell)'s convention, option values **attach**:
@@ -114,8 +117,8 @@ Worth stating plainly, because it is easy to assume otherwise:
   LAN. Airlock adds in-guest firewall rules to block private ranges, but the sandbox user is an
   administrator and could remove them. This is protection against accident, not against a
   determined agent.
-- **Attached projects are not isolated from each other.** They share one sandbox, so an agent
-  working in one attached folder can read and write every other attached folder. Windows Sandbox has
+- **Open projects are not isolated from each other.** They share one sandbox, so an agent
+  working in one open project can read and write every other open project. Windows Sandbox has
   no unshare, so this lasts until `airlock stop`. Run `airlock list` to see what is exposed, and stop
   the sandbox between projects you want kept apart.
 - **The agent can rewrite your git history.** Projects are mapped read-write, `.git` included.
@@ -130,7 +133,7 @@ Worth stating plainly, because it is easy to assume otherwise:
 - The OpenSSH client (`ssh.exe`, `ssh-keygen.exe`), shipped with Windows
 
 Only one Windows Sandbox can run at a time, so Airlock runs one session at a time. Extra terminals
-into the *same* session are just `airlock shell` in another tab.
+into the *same* session are just `airlock open` in another tab.
 
 ## Building
 

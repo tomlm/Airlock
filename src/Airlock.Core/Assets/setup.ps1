@@ -4,14 +4,14 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
-New-Item -ItemType Directory -Force -Path 'C:\airlock' | Out-Null
-Start-Transcript -Path 'C:\airlock\setup.log' -Force | Out-Null
+New-Item -ItemType Directory -Force -Path 'C:\airlock\_setup_' | Out-Null
+Start-Transcript -Path 'C:\airlock\_setup_\setup.log' -Force | Out-Null
 $phase = 'start'
 function Step($n) { $script:phase = $n; Write-Host "== AIRLOCK STEP: $n" }
 
 try {
   Step 'copy-openssh'
-  $null = robocopy 'C:\airlock\tools\OpenSSH-Win64' 'C:\OpenSSH' /E /R:1 /W:1 /NFL /NDL /NJH /NJS
+  $null = robocopy 'C:\airlock\_tools_\OpenSSH-Win64' 'C:\OpenSSH' /E /R:1 /W:1 /NFL /NDL /NJH /NJS
   if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
   $global:LASTEXITCODE = 0
 
@@ -42,7 +42,7 @@ try {
   $sshData = 'C:\ProgramData\ssh'
   New-Item -ItemType Directory -Force -Path $sshData | Out-Null
   $aak = Join-Path $sshData 'administrators_authorized_keys'
-  Copy-Item 'C:\airlock\session\authorized_key.pub' $aak -Force
+  Copy-Item 'C:\airlock\_session_\authorized_key.pub' $aak -Force
   # OpenSSH SILENTLY ignores this file unless the ACL is exactly Administrators + SYSTEM.
   & icacls.exe $aak /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "icacls failed: $LASTEXITCODE" }
@@ -65,7 +65,7 @@ try {
   # Read Path WITHOUT expanding, or we bake in literals and demote REG_EXPAND_SZ to REG_SZ.
   $rawPath = (Get-Item -LiteralPath $envKey).GetValue('Path', '', 'DoNotExpandEnvironmentNames')
   Set-ItemProperty -LiteralPath $envKey -Name 'Path' -Value ('{{PATH_PREPEND}}' + ';' + $rawPath) -Type ExpandString
-  $envFile = 'C:\airlock\session\env.json'
+  $envFile = 'C:\airlock\_session_\env.json'
   if (Test-Path $envFile) {
     $envJson = Get-Content $envFile -Raw | ConvertFrom-Json
     foreach ($p in $envJson.PSObject.Properties) {
@@ -80,12 +80,12 @@ try {
 
   Step 'ready'
   $ok = @{ ok = $true; user = '{{SANDBOX_USER}}'; utc = (Get-Date).ToUniversalTime().ToString('o') }
-  Set-Content -Path 'C:\airlock\ready.json' -Value ($ok | ConvertTo-Json -Compress)
+  Set-Content -Path 'C:\airlock\_setup_\ready.json' -Value ($ok | ConvertTo-Json -Compress)
 }
 catch {
   $bad = @{ ok = $false; phase = $phase; error = $_.Exception.Message
             script = "$($_.InvocationInfo.PositionMessage)" }
-  Set-Content -Path 'C:\airlock\ready.json' -Value ($bad | ConvertTo-Json -Compress)
+  Set-Content -Path 'C:\airlock\_setup_\ready.json' -Value ($bad | ConvertTo-Json -Compress)
   throw
 }
 finally { try { Stop-Transcript | Out-Null } catch {} }

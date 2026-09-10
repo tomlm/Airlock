@@ -3,7 +3,7 @@ using System.IO.Compression;
 namespace Airlock.Tools;
 
 /// <summary>
-/// The host-side folder of things the sandbox needs, mapped in read-only at <c>C:\airlock\tools</c>.
+/// The host-side folder of things the sandbox needs, mapped in read-only.
 /// </summary>
 /// <remarks>
 /// A fresh sandbox has no Git, no Node, no modern .NET and no package manager, and downloading the

@@ -15,9 +15,6 @@ public enum InvocationKind
     /// <summary>One of Airlock's own verbs — <c>list</c>, <c>doctor</c>, <c>tools</c>, …</summary>
     Verb,
 
-    /// <summary>A command to run inside the sandbox, forwarded verbatim.</summary>
-    Passthrough,
-
     /// <summary>The command line was not usable. <see cref="CommandLine.Error"/> says why.</summary>
     Usage,
 }
@@ -27,10 +24,9 @@ public enum InvocationKind
 /// </summary>
 /// <remarks>
 /// <para>
-/// The grammar is <c>airlock [options] &lt;verb&gt; [verb args]</c> or
-/// <c>airlock [options] [--] &lt;command...&gt;</c>. Options are recognised only <i>before</i> the
-/// first positional token; from there on everything belongs to the command being wrapped, so
-/// <c>airlock claude --resume</c> forwards <c>--resume</c> to Claude rather than rejecting it.
+/// The grammar is <c>airlock [options] &lt;verb&gt; [verb args]</c>. Options are recognised only
+/// <i>before</i> the verb; from there on everything belongs to the verb, so
+/// <c>airlock open claude --resume</c> forwards <c>--resume</c> to Claude rather than rejecting it.
 /// </para>
 /// <para>
 /// That boundary, and the <c>--</c> terminator, come from <see cref="CShellCli"/>'s
@@ -90,21 +86,17 @@ public sealed class CommandLine
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        // CShell consumes "--" during parsing, so whether the user forced a passthrough has to be
-        // decided here. "--" counts only while it still could be a terminator: before the first
-        // positional, which is where Rest's boundary would otherwise fall.
-        var forcedPassthrough = IsForcedPassthrough(args);
-
         var parsed = CShellCli.For(args)
             .Program("airlock")
             .Description(
-                "Run a command - usually an AI coding agent - inside a disposable Windows Sandbox, " +
-                "with the current project as the only writable host folder.")
-            .Example("airlock claude", "run Claude Code against the current project")
-            .Example("airlock --project:S:\\src\\Foo claude --resume", "resume a session in another project")
-            .Example("airlock shell", "open an interactive shell in the sandbox")
-            .Example("airlock -- list", "run 'list' inside the sandbox instead of Airlock's own verb")
-            .Rest("command", "the command to run in the sandbox, e.g. 'claude --resume'")
+                "Open an airlock into a disposable Windows Sandbox and work in it. The projects you " +
+                "open are the only writable folders on your machine.")
+            .Example("airlock open claude", "open this project and start Claude Code in it")
+            .Example("airlock open", "open this project and get a shell in it")
+            .Example("airlock open dotnet test", "run one command in this project and come back")
+            .Example("airlock --project:S:\\src\\Foo open claude --resume", "open a different project")
+            .Example("airlock list", "show every project currently open in the sandbox")
+            .Rest("verb", "open | start | stop | list | connect | doctor | tools")
             .Option(out string? project, "project folder; defaults to the current directory", "p")
             .Option(out string? config, "an extra config file layered on top of the usual ones")
             .Switch(out bool verbose, "log every wsb and ssh invocation", "v")
@@ -126,11 +118,12 @@ public sealed class CommandLine
         // Bare `airlock` prints help: booting a VM should always be something you asked for.
         var kind = InvocationKind.Help;
         string? verb = null;
+        string? error = null;
         IReadOnlyList<string> arguments = [];
 
         if (rest.Count > 0)
         {
-            if (!forcedPassthrough && ReservedVerbs.Contains(rest[0]))
+            if (ReservedVerbs.Contains(rest[0]))
             {
                 kind = InvocationKind.Verb;
                 verb = rest[0];
@@ -138,8 +131,11 @@ public sealed class CommandLine
             }
             else
             {
-                kind = InvocationKind.Passthrough;
-                arguments = [.. rest];
+                // Everything runs through a verb, so a bare command is a mistake with an obvious
+                // correction rather than something to guess at.
+                kind = InvocationKind.Usage;
+                error = $"'{rest[0]}' is not an airlock command. " +
+                        $"To run it in the sandbox: airlock open {string.Join(' ', rest)}";
             }
         }
 
@@ -155,29 +151,7 @@ public sealed class CommandLine
             UsageText = parsed.UsageText,
             Verb = verb,
             Arguments = arguments,
+            Error = error,
         };
-    }
-
-    /// <summary>
-    /// True when <c>--</c> appears before the first positional, which is the user saying
-    /// "everything after this is the wrapped command, even if it looks like one of my verbs".
-    /// </summary>
-    private static bool IsForcedPassthrough(IReadOnlyList<string> args)
-    {
-        foreach (var token in args)
-        {
-            if (token == "--")
-            {
-                return true;
-            }
-
-            // The first positional ends the window in which "--" could still be a terminator.
-            if (token.Length > 0 && token[0] != '-')
-            {
-                return false;
-            }
-        }
-
-        return false;
     }
 }

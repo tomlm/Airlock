@@ -9,11 +9,11 @@ $stateFile = "$env:LOCALAPPDATA\Airlock\sandbox.json"
 Set-Location 'S:\github\Airlock\spikes'
 
 Write-Host "`n=== 1. session via unredirected CShell.Run ==="
-& $exe -- powershell -Command "'hello-from-sandbox'" 2>&1 | Out-String | Write-Host
+& $exe open powershell -Command "'hello-from-sandbox'" 2>&1 | Out-String | Write-Host
 Write-Host "exit code passthrough (expect 0): $LASTEXITCODE"
 
 Write-Host "`n=== 1b. a non-zero remote exit code must come back ==="
-& $exe -- powershell -Command "exit 42" 2>&1 | Out-String | Write-Host
+& $exe open powershell -Command "exit 42" 2>&1 | Out-String | Write-Host
 Write-Host "exit code passthrough (expect 42): $LASTEXITCODE"
 
 Write-Host "`n=== 2. destroy the local record, then see if airlock recognises its own sandbox ==="
