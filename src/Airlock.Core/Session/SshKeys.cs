@@ -16,7 +16,7 @@ public static class SshKeys
     /// <summary>
     /// Writes an ed25519 keypair with no passphrase into the session's unmapped key directory.
     /// </summary>
-    public static async Task GenerateAsync(SessionLayout layout, CancellationToken cancellationToken = default)
+    public static async Task GenerateAsync(SandboxLayout layout, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(layout);
 

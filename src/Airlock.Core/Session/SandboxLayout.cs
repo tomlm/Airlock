@@ -1,23 +1,23 @@
 namespace Airlock.Session;
 
 /// <summary>
-/// The host-side folders backing one session, and which of them the sandbox can see.
+/// The host-side folders backing the running sandbox, and which of them it can see.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The split is the point. <see cref="ShareDirectory"/> is mapped into the sandbox read-only, so
-/// everything in it is readable by the agent. <see cref="KeyDirectory"/> holds the session's
+/// everything in it is readable by the agent. <see cref="KeyDirectory"/> holds the sandbox's
 /// <b>private</b> key and is deliberately not mapped anywhere.
+/// </para>
+/// <para>
+/// These live under LocalApplicationData rather than TEMP because the sandbox outlives the command
+/// that started it: a later <c>airlock</c> in another folder needs the same key to connect. They
+/// are removed by <c>airlock stop</c>, which is what finally takes the private key off disk.
+/// </para>
 /// </remarks>
-public sealed class SessionLayout : IDisposable
+public sealed class SandboxLayout
 {
-    private SessionLayout(string id, string root)
-    {
-        Id = id;
-        Root = root;
-    }
-
-    /// <summary>Short, filesystem-safe, and used in log lines the user reads.</summary>
-    public string Id { get; }
+    private SandboxLayout(string root) => Root = root;
 
     public string Root { get; }
 
@@ -41,28 +41,26 @@ public sealed class SessionLayout : IDisposable
     public string EnvFilePath => System.IO.Path.Combine(ShareDirectory, "env.json");
 
     /// <summary>Written for diagnostics only; the sandbox is launched from inline XML.</summary>
-    public string ConfigPath => System.IO.Path.Combine(Root, "session.wsb");
+    public string ConfigPath => System.IO.Path.Combine(Root, "sandbox.wsb");
 
-    public static SessionLayout Create(string sandboxId)
+    public static SandboxLayout Default { get; } = new(System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Airlock",
+        "session"));
+
+    public static SandboxLayout At(string root) => new(root);
+
+    /// <summary>Starts from clean directories, so a stale key can never outlive its sandbox.</summary>
+    public void Reset()
     {
-        // A short id keeps folder names readable; the full sandbox GUID is what wsb tracks.
-        var shortId = sandboxId.Replace("-", string.Empty, StringComparison.Ordinal)[..8];
-        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Airlock", shortId);
+        Delete();
 
-        var layout = new SessionLayout(shortId, root);
-
-        Directory.CreateDirectory(layout.ShareDirectory);
-        Directory.CreateDirectory(layout.KeyDirectory);
-        Directory.CreateDirectory(layout.OutDirectory);
-
-        return layout;
+        Directory.CreateDirectory(ShareDirectory);
+        Directory.CreateDirectory(KeyDirectory);
+        Directory.CreateDirectory(OutDirectory);
     }
 
-    /// <summary>
-    /// Removes the whole session directory. This is what gets the private key off disk, so it runs
-    /// even when the session ended badly.
-    /// </summary>
-    public void Dispose()
+    public void Delete()
     {
         try
         {
@@ -73,7 +71,7 @@ public sealed class SessionLayout : IDisposable
         }
         catch (IOException)
         {
-            // A file left open by a dying ssh.exe should not mask the real failure.
+            // A file still held by a dying ssh.exe must not mask the real failure.
         }
         catch (UnauthorizedAccessException)
         {

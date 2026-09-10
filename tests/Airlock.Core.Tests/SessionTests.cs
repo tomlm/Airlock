@@ -124,12 +124,12 @@ public class RemoteCommandTests
 }
 
 /// <summary>The private key must never end up somewhere the sandbox can read.</summary>
-public class SessionLayoutTests
+public class SandboxLayoutTests
 {
     [Fact]
     public void PrivateKey_IsNotInsideTheMappedShare()
     {
-        using var layout = SessionLayout.Create(Guid.NewGuid().ToString());
+        var layout = TempLayout();
 
         Assert.StartsWith(layout.KeyDirectory, layout.PrivateKeyPath, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(layout.ShareDirectory, layout.PrivateKeyPath, StringComparison.OrdinalIgnoreCase);
@@ -138,23 +138,35 @@ public class SessionLayoutTests
     [Fact]
     public void OnlyThePublicKey_IsPlacedInTheShare()
     {
-        using var layout = SessionLayout.Create(Guid.NewGuid().ToString());
+        var layout = TempLayout();
 
         Assert.StartsWith(layout.ShareDirectory, layout.AuthorizedKeyPath, StringComparison.OrdinalIgnoreCase);
         Assert.EndsWith(".pub", layout.AuthorizedKeyPath, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Dispose_RemovesTheSessionDirectoryAndTheKeyWithIt()
+    public void Delete_RemovesTheSessionDirectoryAndTheKeyWithIt()
     {
-        var layout = SessionLayout.Create(Guid.NewGuid().ToString());
+        // The sandbox now outlives a single command, so this is what `airlock stop` relies on to
+        // finally take the private key off disk.
+        var layout = TempLayout();
         var root = layout.Root;
 
         File.WriteAllText(layout.PrivateKeyPath, "PRIVATE KEY");
         Assert.True(Directory.Exists(root));
 
-        layout.Dispose();
+        layout.Delete();
 
         Assert.False(Directory.Exists(root));
+    }
+
+    private static SandboxLayout TempLayout()
+    {
+        var layout = SandboxLayout.At(
+            Path.Combine(Path.GetTempPath(), "airlock-tests", Guid.NewGuid().ToString("N")));
+
+        layout.Reset();
+
+        return layout;
     }
 }

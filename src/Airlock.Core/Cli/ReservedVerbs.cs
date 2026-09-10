@@ -10,6 +10,7 @@ namespace Airlock.Cli;
 /// </remarks>
 public static class ReservedVerbs
 {
+    public const string Start = "start";
     public const string Run = "run";
     public const string Shell = "shell";
     public const string List = "list";
@@ -22,7 +23,7 @@ public static class ReservedVerbs
 
     private static readonly HashSet<string> Set = new(StringComparer.OrdinalIgnoreCase)
     {
-        Run, Shell, List, Stop, Connect, Doctor, Tools, Config, Trust,
+        Start, Run, Shell, List, Stop, Connect, Doctor, Tools, Config, Trust,
     };
 
     public static bool Contains(string token) => Set.Contains(token);

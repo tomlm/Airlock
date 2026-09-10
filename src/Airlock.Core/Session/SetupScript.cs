@@ -34,7 +34,7 @@ public static class SetupScript
     ];
 
     /// <summary>Writes <c>setup.ps1</c> and the non-secret env file into the mapped share folder.</summary>
-    public static void Write(SessionLayout layout, IReadOnlyList<string> pathPrepend, IDictionary<string, string> machineEnv)
+    public static void Write(SandboxLayout layout, IReadOnlyList<string> pathPrepend, IDictionary<string, string> machineEnv)
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(pathPrepend);

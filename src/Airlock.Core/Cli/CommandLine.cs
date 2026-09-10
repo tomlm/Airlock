@@ -65,6 +65,9 @@ public sealed class CommandLine
     /// <summary>Approve this project's elevated <c>.airlock.json</c> settings without prompting.</summary>
     public bool TrustProject { get; private init; }
 
+    /// <summary>Sandbox memory in MB. Only meaningful when it is this call that starts it.</summary>
+    public int MemoryInMB { get; private init; }
+
     /// <summary>The verb, when <see cref="Kind"/> is <see cref="InvocationKind.Verb"/>.</summary>
     public string? Verb { get; private init; }
 
@@ -108,6 +111,7 @@ public sealed class CommandLine
             .Switch(out bool dryRun, "show the resolved plan and exit without starting anything")
             .Switch(out bool keep, "leave the sandbox running when the session ends")
             .Switch(out bool trustProject, "accept this project's .airlock.json elevated settings")
+            .Option(out int? memory, "sandbox memory in MB, used only when starting it")
             .TryParse();
 
         if (parsed.ShouldExit)
@@ -147,6 +151,7 @@ public sealed class CommandLine
             DryRun = dryRun,
             Keep = keep,
             TrustProject = trustProject,
+            MemoryInMB = memory ?? 0,
             UsageText = parsed.UsageText,
             Verb = verb,
             Arguments = arguments,

@@ -32,7 +32,7 @@ public static class SshLauncher
     /// This is the success signal for provisioning, because <c>wsb exec</c> reports no status.
     /// </summary>
     public static async Task<bool> ProbeAsync(
-        SessionLayout layout,
+        SandboxLayout layout,
         string ip,
         CancellationToken cancellationToken = default)
     {
@@ -81,7 +81,7 @@ public static class SshLauncher
     /// </para>
     /// </remarks>
     public static async Task<int> ConnectAsync(
-        SessionLayout layout,
+        SandboxLayout layout,
         string ip,
         string remoteCommand,
         IReadOnlyDictionary<string, string> secrets,

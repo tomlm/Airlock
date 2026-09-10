@@ -72,7 +72,7 @@ internal static class Program
                 return await DispatchVerbAsync(command, cancellationToken).ConfigureAwait(false);
 
             case InvocationKind.Passthrough:
-                return await StartSessionAsync(command, command.Arguments, cancellationToken).ConfigureAwait(false);
+                return await OpenSessionAsync(command, command.Arguments, cancellationToken).ConfigureAwait(false);
 
             default:
                 throw new InvalidOperationException($"Unhandled invocation kind '{command.Kind}'.");
@@ -82,15 +82,44 @@ internal static class Program
     private static async Task<int> DispatchVerbAsync(CommandLine command, CancellationToken cancellationToken) =>
         command.Verb switch
         {
-            ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.Start => await StartAsync(cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Stop => await StopAsync(cancellationToken).ConfigureAwait(false),
-            ReservedVerbs.Run => await StartSessionAsync(command, command.Arguments, cancellationToken)
+            ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.Run => await OpenSessionAsync(command, command.Arguments, cancellationToken)
                 .ConfigureAwait(false),
-            ReservedVerbs.Shell => await StartSessionAsync(command, [], cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.Shell => await OpenSessionAsync(command, [], cancellationToken).ConfigureAwait(false),
             _ => NotYet(command.Verb!),
         };
 
-    private static async Task<int> StartSessionAsync(
+    /// <summary>
+    /// Brings the sandbox up with no project attached, and leaves it running. Useful for paying the
+    /// boot cost once, up front, before attaching anything to it.
+    /// </summary>
+    private static async Task<int> StartAsync(CancellationToken cancellationToken)
+    {
+        var host = new SandboxHost();
+
+        if (await host.GetStateAsync(cancellationToken).ConfigureAwait(false) is { } already)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Already running ({already.Id}) since {already.StartedUtc.ToLocalTime():t}.[/]");
+
+            return (int)ExitCode.Ok;
+        }
+
+        var state = await WithStatusAsync(host, 0, cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.MarkupLineInterpolated($"Sandbox running at {state.IpAddress} with no folders attached.");
+        AnsiConsole.MarkupLine("[dim]Attach one by running 'airlock <command>' in a project; stop it with 'airlock stop'.[/]");
+
+        return (int)ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// The default path: make sure the sandbox is up, attach this project to it read-write, and
+    /// hand over the terminal.
+    /// </summary>
+    private static async Task<int> OpenSessionAsync(
         CommandLine command,
         IReadOnlyList<string> agentCommand,
         CancellationToken cancellationToken)
@@ -102,53 +131,64 @@ internal static class Program
             AnsiConsole.MarkupLineInterpolated($"[yellow]![/] {warning}");
         }
 
-        var request = new SessionRequest
-        {
-            Project = project,
-            Command = agentCommand,
-            Keep = command.Keep,
-        };
+        var host = new SandboxHost();
 
         if (command.DryRun)
         {
-            return DryRun(request);
+            return DryRun(project, agentCommand);
         }
 
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]{project.HostPath} -> {project.SandboxPath} (read-write; everything else is read-only)[/]");
+        // The status display has to finish before ssh takes the terminal, or its spinner competes
+        // with the agent's own full-screen rendering.
+        var state = await WithStatusAsync(host, command.MemoryInMB, cancellationToken).ConfigureAwait(false);
+        var sandboxPath = await host.AttachAsync(state, project, cancellationToken).ConfigureAwait(false);
 
-        var manager = new SessionManager();
-        SandboxSession? session = null;
+        AnsiConsole.MarkupLineInterpolated($"[dim]{project.HostPath} -> {sandboxPath} (read-write)[/]");
 
-        // The status display must be finished before ssh takes the terminal, or its spinner
-        // competes with the agent's own full-screen rendering. That is why starting the sandbox
-        // and connecting to it are two calls rather than one.
+        var staging = new Progress<string>(m => AnsiConsole.MarkupLineInterpolated($"[dim]{m}[/]"));
+
+        return await host.ConnectAsync(state, sandboxPath, agentCommand, staging, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<SandboxState> WithStatusAsync(
+        SandboxHost host,
+        int memoryInMB,
+        CancellationToken cancellationToken)
+    {
+        // Nothing to show when the sandbox is already up: this is the common case and should feel
+        // instant rather than flashing a spinner.
+        if (await host.GetStateAsync(cancellationToken).ConfigureAwait(false) is { } running)
+        {
+            return running;
+        }
+
+        SandboxState? state = null;
+
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
             .StartAsync("Starting", async ctx =>
             {
-                var progress = new Progress<(SessionPhase Phase, string Detail)>(update =>
+                var progress = new Progress<(SandboxPhase Phase, string Detail)>(update =>
                     ctx.Status(Markup.Escape(update.Detail)));
 
-                session = await manager.StartAsync(request, progress, cancellationToken).ConfigureAwait(false);
+                state = await host
+                    .EnsureRunningAsync(progress, memoryInMB > 0 ? memoryInMB : 8192, cancellationToken)
+                    .ConfigureAwait(false);
             })
             .ConfigureAwait(false);
 
-        await using var live = session!;
-
-        return await live
-            .ConnectAsync(SessionManager.ResolveCommand(agentCommand), cancellationToken)
-            .ConfigureAwait(false);
+        return state!;
     }
 
-    private static int DryRun(SessionRequest request)
+    private static int DryRun(ResolvedProject project, IReadOnlyList<string> command)
     {
         AnsiConsole.MarkupLine("[bold]Project[/]");
-        AnsiConsole.MarkupLineInterpolated($"  {request.Project.HostPath} -> {request.Project.SandboxPath}");
+        AnsiConsole.MarkupLineInterpolated($"  {project.HostPath} -> C:\\work\\{project.Name} (read-write)");
 
         AnsiConsole.MarkupLine("[bold]Command[/]");
         AnsiConsole.MarkupLineInterpolated(
-            $"  {(request.Command.Count == 0 ? "(interactive shell)" : string.Join(' ', request.Command))}");
+            $"  {(command.Count == 0 ? "(interactive shell)" : string.Join(' ', command))}");
 
         AnsiConsole.MarkupLine("[dim]Nothing was started.[/]");
 
@@ -157,38 +197,56 @@ internal static class Program
 
     private static async Task<int> ListAsync(CancellationToken cancellationToken)
     {
-        var ids = await new WsbClient().ListAsync(cancellationToken).ConfigureAwait(false);
+        var host = new SandboxHost();
+        var state = await host.GetStateAsync(cancellationToken).ConfigureAwait(false);
 
-        if (ids.Count == 0)
+        if (state is null)
         {
-            AnsiConsole.MarkupLine("[dim]No sandbox is running.[/]");
+            var others = await new WsbClient().ListAsync(cancellationToken).ConfigureAwait(false);
+
+            AnsiConsole.MarkupLine(others.Count == 0
+                ? "[dim]No sandbox is running.[/]"
+                : $"[yellow]A Windows Sandbox that Airlock did not start is running ({others[0]}).[/]");
+
             return (int)ExitCode.Ok;
         }
 
-        foreach (var id in ids)
+        AnsiConsole.MarkupLineInterpolated(
+            $"Sandbox [bold]{state.Id}[/] at {state.IpAddress}, up since {state.StartedUtc.ToLocalTime():g}");
+
+        if (state.Folders.Count == 0)
         {
-            AnsiConsole.MarkupLineInterpolated($"{id}");
+            AnsiConsole.MarkupLine("[dim]No folders attached.[/]");
+            return (int)ExitCode.Ok;
         }
+
+        // Every attached folder is writable from inside the sandbox, and stays that way until it is
+        // stopped, so listing them is the honest picture of what is currently exposed.
+        var table = new Table().Border(TableBorder.Rounded);
+        table.AddColumn("Host folder (read-write)");
+        table.AddColumn("In the sandbox");
+
+        foreach (var folder in state.Folders)
+        {
+            table.AddRow(Markup.Escape(folder.HostPath), Markup.Escape(folder.SandboxPath));
+        }
+
+        AnsiConsole.Write(table);
 
         return (int)ExitCode.Ok;
     }
 
     private static async Task<int> StopAsync(CancellationToken cancellationToken)
     {
-        var wsb = new WsbClient();
-        var ids = await wsb.ListAsync(cancellationToken).ConfigureAwait(false);
+        var host = new SandboxHost();
 
-        if (ids.Count == 0)
+        if (await host.StopAsync(cancellationToken).ConfigureAwait(false))
         {
-            AnsiConsole.MarkupLine("[dim]No sandbox is running.[/]");
+            AnsiConsole.MarkupLine("Sandbox stopped; every attached folder is detached.");
             return (int)ExitCode.Ok;
         }
 
-        foreach (var id in ids)
-        {
-            await wsb.StopAsync(id, cancellationToken).ConfigureAwait(false);
-            AnsiConsole.MarkupLineInterpolated($"Stopped {id}");
-        }
+        AnsiConsole.MarkupLine("[dim]No Airlock sandbox is running.[/]");
 
         return (int)ExitCode.Ok;
     }
