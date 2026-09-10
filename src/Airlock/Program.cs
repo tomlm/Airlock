@@ -1,5 +1,6 @@
 using System.Reflection;
 using Airlock.Cli;
+using Airlock.Configuration;
 using Airlock.Paths;
 using Airlock.Sandbox;
 using Airlock.Session;
@@ -88,11 +89,21 @@ internal static class Program
             ReservedVerbs.Connect => await ConnectDesktopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Stop => await StopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.Add => ConfigCommands.Add(Config, command.ProjectPath),
+            ReservedVerbs.Remove =>
+                ConfigCommands.Remove(Config, command.ProjectPath, await IsRunningAsync(cancellationToken).ConfigureAwait(false)),
+            ReservedVerbs.Tools => ConfigCommands.Tools(Config, command.Arguments),
             // No arguments after the verb means a shell: you have opened the airlock and stepped in.
-            ReservedVerbs.Open or ReservedVerbs.Run =>
+            ReservedVerbs.Open =>
                 await OpenSessionAsync(command, command.Arguments, cancellationToken).ConfigureAwait(false),
             _ => NotYet(command.Verb!),
         };
+
+    private static AirlockConfigStore Config { get; } = new();
+
+    /// <summary>Whether a sandbox Airlock can claim is up, for advice that depends on it.</summary>
+    private static async Task<bool> IsRunningAsync(CancellationToken cancellationToken) =>
+        await new SandboxHost().GetStateAsync(cancellationToken).ConfigureAwait(false) is not null;
 
     /// <summary>
     /// Brings the sandbox up with no project attached, and leaves it running. Useful for paying the

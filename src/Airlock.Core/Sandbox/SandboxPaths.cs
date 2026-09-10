@@ -57,6 +57,15 @@ public static class SandboxPaths
         name[0] == '_' &&
         name[^1] == '_';
 
-    /// <summary>The path a project with this name gets inside the sandbox.</summary>
+    /// <summary>The path an airlock with this name gets inside the sandbox.</summary>
     public static string ForProject(string name) => System.IO.Path.Combine(Root, name);
+
+    /// <summary>
+    /// Where a tool mounts, one folder per tool under the tools root.
+    /// </summary>
+    /// <remarks>
+    /// Giving each tool its own folder rather than a shared one keeps PATH entries predictable and
+    /// means removing a tool cannot disturb another.
+    /// </remarks>
+    public static string ForTool(string id) => System.IO.Path.Combine(Tools, id);
 }

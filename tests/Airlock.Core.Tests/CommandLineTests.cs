@@ -75,13 +75,33 @@ public class CommandLineTests
     }
 
     [Fact]
-    public void Run_IsAnAliasForOpen()
+    public void Open_CarriesACommandAndItsArguments()
     {
-        var result = CommandLine.Parse(["run", "dotnet", "test"]);
+        var result = CommandLine.Parse(["open", "dotnet", "test"]);
 
         Assert.Equal(InvocationKind.Verb, result.Kind);
-        Assert.Equal(ReservedVerbs.Run, result.Verb);
+        Assert.Equal(ReservedVerbs.Open, result.Verb);
         Assert.Equal(["dotnet", "test"], result.Arguments);
+    }
+
+    [Fact]
+    public void Tools_TakesItsOwnSubcommand()
+    {
+        var result = CommandLine.Parse(["tools", "add", "S:\\bin\\mytools"]);
+
+        Assert.Equal(ReservedVerbs.Tools, result.Verb);
+        Assert.Equal(["add", "S:\\bin\\mytools"], result.Arguments);
+    }
+
+    [Theory]
+    [InlineData("add")]
+    [InlineData("remove")]
+    public void AirlockManagementVerbs_AreRecognised(string verb)
+    {
+        var result = CommandLine.Parse([verb]);
+
+        Assert.Equal(InvocationKind.Verb, result.Kind);
+        Assert.Equal(verb, result.Verb);
     }
 
     [Theory]
@@ -90,7 +110,7 @@ public class CommandLineTests
     [InlineData("doctor")]
     [InlineData("connect")]
     [InlineData("start")]
-    [InlineData("trust")]
+    [InlineData("tools")]
     public void ReservedWord_DispatchesToAirlock(string verb)
     {
         var result = CommandLine.Parse([verb]);

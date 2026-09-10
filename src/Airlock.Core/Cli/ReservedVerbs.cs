@@ -11,24 +11,34 @@ namespace Airlock.Cli;
 /// </remarks>
 public static class ReservedVerbs
 {
-    /// <summary>Attach this project and work in it - with a command, or a shell without one.</summary>
+    /// <summary>Open this folder as an airlock and launch a tool in it - or a shell, given none.</summary>
     public const string Open = "open";
 
-    /// <summary>Alias for <see cref="Open"/>, for when "run this command" reads better.</summary>
-    public const string Run = "run";
-
+    /// <summary>Boot the sandbox with every configured tool and airlock mounted.</summary>
     public const string Start = "start";
+
     public const string Stop = "stop";
+
+    /// <summary>Sandbox status, the configured airlocks, and the configured tools.</summary>
     public const string List = "list";
-    public const string Connect = "connect";
-    public const string Doctor = "doctor";
+
+    /// <summary>Register a folder as an airlock without opening it.</summary>
+    public const string Add = "add";
+
+    /// <summary>Unregister an airlock. It stays mounted until the sandbox is stopped.</summary>
+    public const string Remove = "remove";
+
+    /// <summary>Manage the read-only mounts that land on PATH.</summary>
     public const string Tools = "tools";
-    public const string Config = "config";
-    public const string Trust = "trust";
+
+    /// <summary>Reopen the sandbox desktop window.</summary>
+    public const string Connect = "connect";
+
+    public const string Doctor = "doctor";
 
     private static readonly HashSet<string> Set = new(StringComparer.OrdinalIgnoreCase)
     {
-        Open, Run, Start, Stop, List, Connect, Doctor, Tools, Config, Trust,
+        Open, Start, Stop, List, Add, Remove, Tools, Connect, Doctor,
     };
 
     public static bool Contains(string token) => Set.Contains(token);

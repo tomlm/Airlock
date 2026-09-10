@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using Airlock.Configuration;
 
 namespace Airlock.Session;
 
@@ -79,42 +80,4 @@ public static class SetupScript
 internal static class SetupJson
 {
     internal static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
-}
-
-/// <summary>
-/// Stops a secret being written into the folder that gets mapped into the sandbox.
-/// </summary>
-/// <remarks>
-/// Secrets are supposed to travel over the SSH channel, never through a file. This turns that
-/// intention into something the build enforces rather than something a future edit can quietly
-/// undo.
-/// </remarks>
-public static class SecretGuard
-{
-    private static readonly string[] Suffixes =
-        ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS", "PAT"];
-
-    public static bool LooksLikeSecret(string name)
-    {
-        ArgumentNullException.ThrowIfNull(name);
-
-        var upper = name.ToUpperInvariant();
-
-        return Suffixes.Any(s => upper.EndsWith(s, StringComparison.Ordinal))
-            || Suffixes.Any(s => upper.Contains('_' + s, StringComparison.Ordinal));
-    }
-
-    public static void AssertNoSecrets(IDictionary<string, string> values)
-    {
-        ArgumentNullException.ThrowIfNull(values);
-
-        var offender = values.Keys.FirstOrDefault(LooksLikeSecret);
-
-        if (offender is not null)
-        {
-            throw new InvalidOperationException(
-                $"'{offender}' looks like a secret and would be written to a folder mapped into the " +
-                "sandbox. Forward it over the SSH channel instead.");
-        }
-    }
 }

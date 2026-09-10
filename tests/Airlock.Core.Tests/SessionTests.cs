@@ -1,3 +1,4 @@
+using Airlock.Configuration;
 using Airlock.Session;
 
 namespace Airlock.Tests;
