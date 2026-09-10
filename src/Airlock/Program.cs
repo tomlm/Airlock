@@ -89,10 +89,10 @@ internal static class Program
     private static async Task<int> DispatchVerbAsync(CommandLine command, CancellationToken cancellationToken) =>
         command.Verb switch
         {
-            ReservedVerbs.Start => await StartAsync(cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.Start => await StartAsync(command.Arguments, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Connect => await ConnectDesktopAsync(command, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Stop => await StopAsync(command, cancellationToken).ConfigureAwait(false),
-            ReservedVerbs.List => await ListAsync(cancellationToken).ConfigureAwait(false),
+            ReservedVerbs.List => await ListAsync(command.Arguments, cancellationToken).ConfigureAwait(false),
             ReservedVerbs.Add => ConfigCommands.Add(Config, command.ProjectPath, command.Arguments),
             ReservedVerbs.Remove => ConfigCommands.Remove(
                 Config,
@@ -108,6 +108,12 @@ internal static class Program
 
     private static AirlockConfigStore Config { get; } = new();
 
+    /// <summary>
+    /// What a verb's own parser decided. CShell has already printed the help or the error.
+    /// </summary>
+    private static int Exit(CShellNet.CliResult parsed) =>
+        parsed.HelpRequested ? (int)ExitCode.Ok : (int)ExitCode.Usage;
+
     /// <summary>Whether a sandbox Airlock can claim is up, for advice that depends on it.</summary>
     private static async Task<bool> IsRunningAsync(CancellationToken cancellationToken) =>
         await new SandboxHost().GetStateAsync(cancellationToken).ConfigureAwait(false) is not null;
@@ -120,8 +126,19 @@ internal static class Program
     /// never re-reads it, so opening it before provisioning has set PATH gives the first shell a
     /// stale one.
     /// </remarks>
-    private static async Task<int> StartAsync(CancellationToken cancellationToken)
+    private static async Task<int> StartAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
     {
+        var parsed = VerbCli
+            .For(ReservedVerbs.Start, args,
+                "Boot the sandbox with every configured tool and airlock mounted, then show its desktop.")
+            .Example("airlock start", "boot, mount everything configured, and show the desktop")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return Exit(parsed);
+        }
+
         var host = new SandboxHost();
 
         if (await host.GetStateAsync(cancellationToken).ConfigureAwait(false) is { } already)
@@ -149,6 +166,16 @@ internal static class Program
     /// <summary>Reopens the sandbox desktop window.</summary>
     private static async Task<int> ConnectDesktopAsync(CommandLine command, CancellationToken cancellationToken)
     {
+        var parsed = VerbCli
+            .For(ReservedVerbs.Connect, command.Arguments, "Reopen the sandbox's desktop window.")
+            .Example("airlock connect", "show the desktop again after closing it")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return Exit(parsed);
+        }
+
         var host = new SandboxHost();
         var state = await WithStatusAsync(host, cancellationToken).ConfigureAwait(false);
 
@@ -171,6 +198,21 @@ internal static class Program
         IReadOnlyList<string> toolCommand,
         CancellationToken cancellationToken)
     {
+        var parsed = VerbCli
+            .For(ReservedVerbs.Open, toolCommand,
+                "Open this folder as an airlock and run a tool in it - or a shell, given none.")
+            .Example("airlock open", "open this folder and get a shell in it")
+            .Example("airlock open claude", "open this folder and start Claude in it")
+            .Example("airlock open claude --resume", "anything after the tool belongs to the tool")
+            .Example("airlock --project:S:\\src\\Foo open", "open a folder other than this one")
+            .Rest("tool", "the tool to run, and its arguments")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return Exit(parsed);
+        }
+
         var project = ProjectResolver.Resolve(command.ProjectPath);
 
         foreach (var warning in project.Warnings)
@@ -270,8 +312,18 @@ internal static class Program
     /// The airlocks are the interesting part: there is only ever one sandbox, so its identity is a
     /// footnote rather than the headline. Tools have their own verb.
     /// </remarks>
-    private static async Task<int> ListAsync(CancellationToken cancellationToken)
+    private static async Task<int> ListAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
     {
+        var parsed = VerbCli
+            .For(ReservedVerbs.List, args, "Show every airlock, and whether it is open right now.")
+            .Example("airlock list", "the airlocks, and the sandbox's state")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return Exit(parsed);
+        }
+
         var host = new SandboxHost();
         var state = await host.GetStateAsync(cancellationToken).ConfigureAwait(false);
         var config = Config.LoadOrCreate();
@@ -362,15 +414,17 @@ internal static class Program
 
     private static async Task<int> StopAsync(CommandLine command, CancellationToken cancellationToken)
     {
-        var parsed = CShellNet.Cli.For(command.Arguments)
-            .Program("airlock stop")
-            .Description("Destroy the running sandbox and detach every folder attached to it.")
+        var parsed = VerbCli
+            .For(ReservedVerbs.Stop, command.Arguments,
+                "Destroy the sandbox and detach every airlock mounted in it.")
+            .Example("airlock stop", "destroy the sandbox")
+            .Example("airlock stop --force", "stop one Airlock cannot prove it started")
             .Switch(out bool force, "stop a sandbox even if Airlock cannot prove it started it")
             .TryParse();
 
         if (parsed.ShouldExit)
         {
-            return parsed.HelpRequested ? (int)ExitCode.Ok : (int)ExitCode.Usage;
+            return Exit(parsed);
         }
 
         var host = new SandboxHost();

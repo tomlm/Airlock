@@ -1,3 +1,4 @@
+using Airlock.Cli;
 using Airlock.Configuration;
 using Airlock.Paths;
 using Airlock.Sandbox;
@@ -20,6 +21,18 @@ internal static class ConfigCommands
     /// </param>
     internal static int Add(AirlockConfigStore store, string? projectOption, IReadOnlyList<string> args)
     {
+        var parsed = VerbCli
+            .For(ReservedVerbs.Add, args, "Register a folder as an airlock, without opening it.")
+            .Example("airlock add", "register this folder")
+            .Example("airlock add S:\\src\\foo", "register another one")
+            .Rest("folder", "the folder to register; defaults to the current directory")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return parsed.HelpRequested ? (int)ExitCode.Ok : (int)ExitCode.Usage;
+        }
+
         var config = store.LoadOrCreate();
         var target = Target(projectOption, args);
         var project = ProjectResolver.Resolve(target);
@@ -71,6 +84,20 @@ internal static class ConfigCommands
         IReadOnlyList<string> args,
         bool sandboxRunning)
     {
+        var parsed = VerbCli
+            .For(ReservedVerbs.Remove, args,
+                "Unregister an airlock. A running sandbox keeps it mounted until it is stopped.")
+            .Example("airlock remove spikes", "by the name 'airlock list' shows")
+            .Example("airlock remove S:\\src\\foo", "by folder")
+            .Example("airlock remove", "this folder")
+            .Rest("name", "an airlock name or folder; defaults to the current directory")
+            .TryParse();
+
+        if (parsed.ShouldExit)
+        {
+            return parsed.HelpRequested ? (int)ExitCode.Ok : (int)ExitCode.Usage;
+        }
+
         var config = store.LoadOrCreate();
         var target = Target(projectOption, args);
         var existing = Find(config, target);
@@ -160,9 +187,8 @@ internal static class ConfigCommands
     /// </remarks>
     internal static int Tools(AirlockConfigStore store, IReadOnlyList<string> args)
     {
-        var parsed = CShellNet.Cli.For(args)
-            .Program("airlock tools")
-            .Description(
+        var parsed = VerbCli
+            .For(ReservedVerbs.Tools, args,
                 "Manage the read-only mounts that land on the sandbox's PATH. Changes take effect " +
                 "the next time the sandbox starts.")
             .Example("airlock tools", "list them")
