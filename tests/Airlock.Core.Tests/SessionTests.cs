@@ -4,9 +4,9 @@ using Airlock.Session;
 namespace Airlock.Tests;
 
 /// <summary>
-/// Secrets are supposed to reach the sandbox over the SSH channel and never through a file. The
-/// session's share folder is mapped into the sandbox, so anything written there is readable by the
-/// agent - which makes this the difference between forwarding a credential and handing it over.
+/// Credentials reach the guest through the writable handoff folder, which both sides delete. What
+/// must never happen is one landing in the read-only session folder, which stays mapped for the
+/// sandbox's whole life, or in the config file on disk.
 /// </summary>
 public class SecretGuardTests
 {
@@ -24,18 +24,18 @@ public class SecretGuardTests
     [Theory]
     [InlineData("DOTNET_ROOT")]
     [InlineData("PATH")]
-    [InlineData("AIRLOCK_PROJECT")]
+    [InlineData("AIRLOCK")]
     [InlineData("TERM")]
     [InlineData("KEYBOARD_LAYOUT")]
     public void OrdinaryNames_AreNotFlagged(string name) =>
         Assert.False(SecretGuard.LooksLikeSecret(name));
 
     [Fact]
-    public void WritingASecretToTheMappedShare_IsRefused()
+    public void WritingASecretToTheReadOnlyShare_IsRefused()
     {
         var env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["DOTNET_ROOT"] = @"C:\airlock\dotnet",
+            ["DOTNET_ROOT"] = @"C:\airlock\_tools_\dotnet",
             ["ANTHROPIC_API_KEY"] = "sk-should-never-be-written",
         };
 
@@ -49,7 +49,7 @@ public class SecretGuardTests
     {
         var env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["DOTNET_ROOT"] = @"C:\airlock\dotnet",
+            ["DOTNET_ROOT"] = @"C:\airlock\_tools_\dotnet",
             ["AIRLOCK"] = "1",
         };
 
@@ -58,102 +58,39 @@ public class SecretGuardTests
 }
 
 /// <summary>
-/// The remote command crosses three layers of quoting on its way to the guest shell, so it is sent
-/// base64-encoded. These cover the encoding and the PowerShell literal quoting underneath it.
+/// The layout is what keeps the two directions apart: one folder the sandbox may only read, and one
+/// it may write, which is the only way it can answer at all.
 /// </summary>
-public class RemoteCommandTests
-{
-    [Fact]
-    public void Encode_ProducesBase64OfUtf16()
-    {
-        // PowerShell's -EncodedCommand requires UTF-16LE, not UTF-8.
-        var encoded = SshLauncher.Encode("echo hi");
-        var decoded = System.Text.Encoding.Unicode.GetString(Convert.FromBase64String(encoded));
-
-        Assert.Equal("echo hi", decoded);
-    }
-
-    [Fact]
-    public void RemoteCommand_MovesToTheProjectFirst()
-    {
-        var script = SshLauncher.BuildRemoteCommand(@"C:\work\Foo", ["claude"]);
-
-        Assert.Contains(@"Set-Location -LiteralPath 'C:\work\Foo'", script, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RemoteCommand_PassesArgumentsThrough()
-    {
-        var script = SshLauncher.BuildRemoteCommand(@"C:\work\Foo", ["claude", "--resume"]);
-
-        Assert.Contains("& 'claude' @('--resume')", script, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RemoteCommand_PropagatesTheExitCode()
-    {
-        // The wrapped command's exit code is what airlock itself returns, so it has to survive.
-        var script = SshLauncher.BuildRemoteCommand(@"C:\work\Foo", ["dotnet", "test"]);
-
-        Assert.Contains("exit $LASTEXITCODE", script, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void SingleQuotesInArguments_AreEscapedNotInjected()
-    {
-        var script = SshLauncher.BuildRemoteCommand(@"C:\work\Foo", ["claude", "it's"]);
-
-        // Doubling is how a PowerShell single-quoted literal escapes a quote.
-        Assert.Contains("'it''s'", script, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void PathsWithSpaces_StaySingleArguments()
-    {
-        var script = SshLauncher.BuildRemoteCommand(@"C:\work\My Project", ["claude"]);
-
-        Assert.Contains(@"'C:\work\My Project'", script, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void NoCommand_YieldsOnlyThePrologue()
-    {
-        var script = SshLauncher.BuildRemoteCommand(@"C:\work\Foo", []);
-
-        Assert.DoesNotContain("exit $LASTEXITCODE", script, StringComparison.Ordinal);
-    }
-}
-
-/// <summary>The private key must never end up somewhere the sandbox can read.</summary>
 public class SandboxLayoutTests
 {
     [Fact]
-    public void PrivateKey_IsNotInsideTheMappedShare()
+    public void TheGuestsOnlyWayToAnswer_IsTheWritableFolder()
     {
+        // wsb exec returns neither output nor an exit code, so every one of these is a file.
         var layout = TempLayout();
 
-        Assert.StartsWith(layout.KeyDirectory, layout.PrivateKeyPath, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(layout.ShareDirectory, layout.PrivateKeyPath, StringComparison.OrdinalIgnoreCase);
+        foreach (var path in new[] { layout.ReadyPath, layout.SecretsPath, layout.ProbePath })
+        {
+            Assert.StartsWith(layout.OutDirectory, path, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
-    public void OnlyThePublicKey_IsPlacedInTheShare()
+    public void TheSetupScriptAndEnv_LiveInTheReadOnlyShare()
     {
         var layout = TempLayout();
 
-        Assert.StartsWith(layout.ShareDirectory, layout.AuthorizedKeyPath, StringComparison.OrdinalIgnoreCase);
-        Assert.EndsWith(".pub", layout.AuthorizedKeyPath, StringComparison.Ordinal);
+        Assert.StartsWith(layout.ShareDirectory, layout.SetupScriptPath, StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith(layout.ShareDirectory, layout.EnvFilePath, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void Delete_RemovesTheSessionDirectoryAndTheKeyWithIt()
+    public void Delete_RemovesEverythingIncludingAnyHandoffLeftBehind()
     {
-        // The sandbox now outlives a single command, so this is what `airlock stop` relies on to
-        // finally take the private key off disk.
         var layout = TempLayout();
         var root = layout.Root;
 
-        File.WriteAllText(layout.PrivateKeyPath, "PRIVATE KEY");
+        File.WriteAllText(layout.SecretsPath, "{}");
         Assert.True(Directory.Exists(root));
 
         layout.Delete();
@@ -169,5 +106,144 @@ public class SandboxLayoutTests
         layout.Reset();
 
         return layout;
+    }
+}
+
+/// <summary>
+/// The credential handoff: written from host environment, never stored, removed by whichever side
+/// gets there first.
+/// </summary>
+public class SecretHandoffTests : IDisposable
+{
+    private const string Name = "AIRLOCK_TEST_SECRET";
+
+    private readonly SandboxLayout _layout = SandboxLayout.At(
+        Path.Combine(Path.GetTempPath(), "airlock-tests", Guid.NewGuid().ToString("N")));
+
+    public SecretHandoffTests() => _layout.Reset();
+
+    [Fact]
+    public void OnlyVariablesActuallySetOnTheHost_AreHandedOver()
+    {
+        Environment.SetEnvironmentVariable(Name, "value-from-host");
+
+        var written = SetupScript.WriteSecrets(_layout, [Name, "AIRLOCK_TEST_MISSING"]);
+
+        Assert.Equal([Name], written);
+        Assert.Contains("value-from-host", File.ReadAllText(_layout.SecretsPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NothingSet_WritesNoFileAtAll()
+    {
+        var written = SetupScript.WriteSecrets(_layout, ["AIRLOCK_TEST_DEFINITELY_MISSING"]);
+
+        Assert.Empty(written);
+        Assert.False(File.Exists(_layout.SecretsPath));
+    }
+
+    [Fact]
+    public void DeleteSecrets_ClearsTheHandoff()
+    {
+        // The guest deletes this as soon as it has read it; the host deletes it again in case the
+        // guest died in between. Either call has to work on its own.
+        Environment.SetEnvironmentVariable(Name, "value-from-host");
+        SetupScript.WriteSecrets(_layout, [Name]);
+
+        SetupScript.DeleteSecrets(_layout);
+
+        Assert.False(File.Exists(_layout.SecretsPath));
+    }
+
+    [Fact]
+    public void DeleteSecrets_IsSafeWhenTheGuestAlreadyDidIt()
+    {
+        SetupScript.DeleteSecrets(_layout);
+        SetupScript.DeleteSecrets(_layout);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable(Name, null);
+        _layout.Delete();
+        GC.SuppressFinalize(this);
+    }
+}
+
+/// <summary>The provisioning script is generated from a template, so nothing may be left unfilled.</summary>
+public class SetupScriptTests : IDisposable
+{
+    private readonly SandboxLayout _layout = SandboxLayout.At(
+        Path.Combine(Path.GetTempPath(), "airlock-tests", Guid.NewGuid().ToString("N")));
+
+    public SetupScriptTests() => _layout.Reset();
+
+    [Fact]
+    public void EveryTokenIsSubstituted()
+    {
+        SetupScript.Write(_layout, [@"C:\airlock\_tools_\dotnet"], Env(), new NetworkConfig());
+
+        var script = File.ReadAllText(_layout.SetupScriptPath);
+
+        Assert.DoesNotContain("{{", script, StringComparison.Ordinal);
+        Assert.Contains(@"C:\airlock\_tools_\dotnet", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PathIsRewrittenWithoutExpandingIt()
+    {
+        // Reading Path expanded bakes in literals and demotes REG_EXPAND_SZ to REG_SZ, which breaks
+        // every later variable the guest relies on.
+        SetupScript.Write(_layout, [@"C:\airlock\_tools_\git\cmd"], Env(), new NetworkConfig());
+
+        var script = File.ReadAllText(_layout.SetupScriptPath);
+
+        Assert.Contains("DoNotExpandEnvironmentNames", script, StringComparison.Ordinal);
+        Assert.Contains("ExpandString", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BlockingTheLan_AllowsTheGuestsOwnSubnetFirst()
+    {
+        // The guest's own address and gateway sit inside 172.16.0.0/12, so a blanket block would
+        // cut its DNS and default route.
+        SetupScript.Write(_layout, [], Env(), new NetworkConfig { BlockLan = true });
+
+        var script = File.ReadAllText(_layout.SetupScriptPath);
+
+        Assert.Contains("airlock-allow-own", script, StringComparison.Ordinal);
+        Assert.Contains("Get-NetRoute", script, StringComparison.Ordinal);
+        Assert.Contains("172.16.0.0/12", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AllowedAddresses_AreQuotedAsPowerShellLiterals()
+    {
+        SetupScript.Write(
+            _layout,
+            [],
+            Env(),
+            new NetworkConfig { BlockLan = true, Allow = ["192.168.1.50"] });
+
+        Assert.Contains("'192.168.1.50'", File.ReadAllText(_layout.SetupScriptPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ASecretInTheMachineEnvironment_IsRefused()
+    {
+        var env = Env();
+        env["ANTHROPIC_API_KEY"] = "sk-nope";
+
+        Assert.Throws<InvalidOperationException>(
+            () => SetupScript.Write(_layout, [], env, new NetworkConfig()));
+    }
+
+    private static Dictionary<string, string> Env() =>
+        new(StringComparer.Ordinal) { ["AIRLOCK"] = "1" };
+
+    public void Dispose()
+    {
+        _layout.Delete();
+        GC.SuppressFinalize(this);
     }
 }

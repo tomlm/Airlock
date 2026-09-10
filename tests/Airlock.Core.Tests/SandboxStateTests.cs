@@ -26,7 +26,6 @@ public class SandboxStateStoreTests : IDisposable
         var saved = new SandboxState
         {
             Id = "1ec5f0a4-0000-0000-0000-000000000001",
-            IpAddress = "172.22.155.205",
             StartedUtc = DateTimeOffset.UtcNow,
             Folders = [new AttachedFolder(@"S:\src\A", @"C:\work\A")],
         };
@@ -36,7 +35,6 @@ public class SandboxStateStoreTests : IDisposable
 
         Assert.NotNull(loaded);
         Assert.Equal(saved.Id, loaded.Id);
-        Assert.Equal(saved.IpAddress, loaded.IpAddress);
         Assert.Equal(@"S:\src\A", loaded.Folders[0].HostPath);
         Assert.Equal(@"C:\work\A", loaded.Folders[0].SandboxPath);
     }
@@ -56,7 +54,7 @@ public class SandboxStateStoreTests : IDisposable
     public void Clear_RemovesTheFile()
     {
         var store = new SandboxStateStore(_path);
-        store.Save(new SandboxState { Id = "x", IpAddress = "10.0.0.1" });
+        store.Save(new SandboxState { Id = "x" });
 
         store.Clear();
 

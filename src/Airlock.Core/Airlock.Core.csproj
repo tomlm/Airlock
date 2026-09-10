@@ -5,10 +5,8 @@
     <AssemblyName>Airlock.Core</AssemblyName>
   </PropertyGroup>
 
-  <!-- Local project reference while Exec()/ExecAsync() are unreleased; swap back to the
-       PackageReference once a CShell with them ships. -->
   <ItemGroup>
-    <ProjectReference Include="..\..\..\CShell\src\CShell.csproj" />
+    <PackageReference Include="CShell" />
   </ItemGroup>
 
   <ItemGroup>

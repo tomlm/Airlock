@@ -106,9 +106,13 @@ internal static class Program
         await new SandboxHost().GetStateAsync(cancellationToken).ConfigureAwait(false) is not null;
 
     /// <summary>
-    /// Brings the sandbox up with no project attached, and leaves it running. Useful for paying the
-    /// boot cost once, up front, before attaching anything to it.
+    /// Brings the sandbox up with everything configured mounted, and shows the desktop.
     /// </summary>
+    /// <remarks>
+    /// The window comes up last on purpose: the desktop inherits machine environment at logon and
+    /// never re-reads it, so opening it before provisioning has set PATH gives the first shell a
+    /// stale one.
+    /// </remarks>
     private static async Task<int> StartAsync(CancellationToken cancellationToken)
     {
         var host = new SandboxHost();
@@ -118,52 +122,46 @@ internal static class Program
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Already running ({already.Id}) since {already.StartedUtc.ToLocalTime():t}.[/]");
 
+            await host.OpenDesktopAsync(already, cancellationToken).ConfigureAwait(false);
+
             return (int)ExitCode.Ok;
         }
 
-        var state = await WithStatusAsync(host, 0, cancellationToken).ConfigureAwait(false);
+        var config = Config.LoadOrCreate();
+        var state = await WithStatusAsync(host, cancellationToken).ConfigureAwait(false);
 
-        AnsiConsole.MarkupLineInterpolated($"Sandbox running at {state.IpAddress} with no folders attached.");
-        AnsiConsole.MarkupLine("[dim]Attach one by running 'airlock <command>' in a project; stop it with 'airlock stop'.[/]");
+        await host.OpenDesktopAsync(state, cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"Sandbox up with {config.Tools.Count} tool(s) on PATH and {config.Airlocks.Count} airlock(s) mounted.");
+        AnsiConsole.MarkupLine("[dim]Open one with 'airlock open' in its folder; stop with 'airlock stop'.[/]");
 
         return (int)ExitCode.Ok;
     }
 
-    /// <summary>
-    /// Opens the sandbox's desktop window, for looking at what the agent did or working out why a
-    /// sandbox came up wrong.
-    /// </summary>
+    /// <summary>Reopens the sandbox desktop window.</summary>
     private static async Task<int> ConnectDesktopAsync(CommandLine command, CancellationToken cancellationToken)
     {
         var host = new SandboxHost();
-        var state = await WithStatusAsync(host, command.MemoryInMB, cancellationToken).ConfigureAwait(false);
+        var state = await WithStatusAsync(host, cancellationToken).ConfigureAwait(false);
 
         await host.OpenDesktopAsync(state, cancellationToken).ConfigureAwait(false);
 
         AnsiConsole.MarkupLineInterpolated($"Opening the desktop for sandbox {state.Id}.");
 
-        if (state.Folders.Count > 0)
-        {
-            AnsiConsole.MarkupLineInterpolated($"[dim]Open projects are visible under {SandboxPaths.Root}.[/]");
-        }
-
-        // Worth stating rather than letting someone discover it by trying to sign in: the window is
-        // a different Windows session from the one the agent runs in.
-        AnsiConsole.MarkupLine(
-            "[dim]The window signs in as WDAGUtilityAccount, which is a different account from the " +
-            "'airlock' user your agent sessions run as. Files are shared; sign-ins and per-user " +
-            "installs are not.[/]");
-
         return (int)ExitCode.Ok;
     }
 
     /// <summary>
-    /// The default path: make sure the sandbox is up, attach this project to it read-write, and
-    /// hand over the terminal.
+    /// Opens this folder as an airlock and launches a tool in it, inside the sandbox's desktop.
     /// </summary>
+    /// <remarks>
+    /// A folder that is not yet an airlock is added and mounted here, so working in a new checkout
+    /// is one command rather than two.
+    /// </remarks>
     private static async Task<int> OpenSessionAsync(
         CommandLine command,
-        IReadOnlyList<string> agentCommand,
+        IReadOnlyList<string> toolCommand,
         CancellationToken cancellationToken)
     {
         var project = ProjectResolver.Resolve(command.ProjectPath);
@@ -173,29 +171,51 @@ internal static class Program
             AnsiConsole.MarkupLineInterpolated($"[yellow]![/] {warning}");
         }
 
-        var host = new SandboxHost();
-
         if (command.DryRun)
         {
-            return DryRun(project, agentCommand);
+            return DryRun(project, toolCommand);
         }
 
-        // The status display has to finish before ssh takes the terminal, or its spinner competes
-        // with the agent's own full-screen rendering.
-        var state = await WithStatusAsync(host, command.MemoryInMB, cancellationToken).ConfigureAwait(false);
-        var sandboxPath = await host.AttachAsync(state, project, cancellationToken).ConfigureAwait(false);
+        var config = Config.LoadOrCreate();
+        var airlock = config.FindByHost(project.HostPath);
+        var isNew = airlock is null;
 
-        AnsiConsole.MarkupLineInterpolated($"[dim]{project.HostPath} -> {sandboxPath} (read-write)[/]");
+        if (airlock is null)
+        {
+            airlock = new AirlockDefinition(project.HostPath, config.AllocateName(project.Name));
+            config.Airlocks.Add(airlock);
+            Config.Save(config);
+        }
 
-        var staging = new Progress<string>(m => AnsiConsole.MarkupLineInterpolated($"[dim]{m}[/]"));
+        var host = new SandboxHost();
 
-        return await host.ConnectAsync(state, sandboxPath, agentCommand, staging, cancellationToken)
-            .ConfigureAwait(false);
+        if (IsAgent(toolCommand))
+        {
+            host.EnsureAgent(new Progress<string>(m => AnsiConsole.MarkupLineInterpolated($"[dim]{m}[/]")));
+        }
+
+        var state = await WithStatusAsync(host, cancellationToken).ConfigureAwait(false);
+        var sandboxPath = await host.AttachAsync(state, airlock, cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]{(isNew ? "Added " : string.Empty)}{project.HostPath} -> {sandboxPath} (read-write)[/]");
+
+        await host.OpenAsync(state, sandboxPath, toolCommand, cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"Opened {(toolCommand.Count == 0 ? "a shell" : string.Join(' ', toolCommand))} in the sandbox.");
+
+        return (int)ExitCode.Ok;
     }
+
+    /// <summary>The agent CLI is staged on first use rather than shipped in every sandbox.</summary>
+    private static bool IsAgent(IReadOnlyList<string> command) =>
+        command.Count > 0 &&
+        System.IO.Path.GetFileNameWithoutExtension(command[0])
+            .Equals("claude", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<SandboxState> WithStatusAsync(
         SandboxHost host,
-        int memoryInMB,
         CancellationToken cancellationToken)
     {
         // Nothing to show when the sandbox is already up: this is the common case and should feel
@@ -214,9 +234,7 @@ internal static class Program
                 var progress = new Progress<(SandboxPhase Phase, string Detail)>(update =>
                     ctx.Status(Markup.Escape(update.Detail)));
 
-                state = await host
-                    .EnsureRunningAsync(progress, memoryInMB > 0 ? memoryInMB : 8192, cancellationToken)
-                    .ConfigureAwait(false);
+                state = await host.EnsureRunningAsync(progress, cancellationToken).ConfigureAwait(false);
             })
             .ConfigureAwait(false);
 
@@ -255,7 +273,7 @@ internal static class Program
         }
 
         AnsiConsole.MarkupLineInterpolated(
-            $"Sandbox [bold]{state.Id}[/] at {state.IpAddress}, up since {state.StartedUtc.ToLocalTime():g}");
+            $"Sandbox [bold]{state.Id}[/], up since {state.StartedUtc.ToLocalTime():g}");
 
         if (state.Adopted)
         {
@@ -410,9 +428,13 @@ internal static class Program
 }
 
 /// <summary>
-/// Process exit codes. A session instead returns the wrapped command's own exit code, so these
-/// avoid the low numbers a wrapped program is likely to use.
+/// Process exit codes.
 /// </summary>
+/// <remarks>
+/// Airlock is a manager now: it launches a tool into the sandbox's desktop and returns, so these
+/// report how the launch went rather than what the tool eventually did. A tool's own exit code
+/// stays inside the sandbox, where its window is.
+/// </remarks>
 internal enum ExitCode
 {
     Ok = 0,
@@ -420,7 +442,6 @@ internal enum ExitCode
     Preflight = 3,
     Sandbox = 4,
     Provisioning = 5,
-    Ssh = 6,
     Tools = 7,
     Internal = 70,
     Interrupted = 130,

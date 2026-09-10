@@ -1,4 +1,4 @@
-using System.Net.Sockets;
+using Airlock.Configuration;
 using Airlock.Paths;
 using Airlock.Sandbox;
 using Airlock.Tools;
@@ -13,8 +13,6 @@ public enum SandboxPhase
     Starting,
     Booting,
     Provisioning,
-    Networking,
-    WaitingForSsh,
     Ready,
     Attaching,
 }
@@ -23,31 +21,32 @@ public enum SandboxPhase
 public sealed class SessionException(string message) : Exception(message);
 
 /// <summary>
-/// Owns the one long-running sandbox: starting it, attaching project folders to it, connecting to
-/// it, and stopping it.
+/// Owns the one long-running sandbox: starting it with everything configured mounted, opening
+/// airlocks in it, and stopping it.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The sandbox is a shared machine that outlives any single command. The first <c>airlock</c>
-/// invocation boots and provisions it; later ones find it already running and only attach whatever
-/// folder they need. That is possible because <c>wsb share</c> works against a live sandbox.
+/// The sandbox is a configured machine rather than something assembled per command. <c>start</c>
+/// mounts every tool read-only onto PATH and every airlock read-write, then shows the desktop.
+/// Later commands find it already running and launch into it.
 /// </para>
 /// <para>
-/// Attached folders accumulate. Windows Sandbox offers no unshare, so every project attached during
-/// the sandbox's life stays writable from inside it until <c>airlock stop</c>. <c>airlock list</c>
-/// shows what is currently exposed.
+/// Everything the guest tells the host comes back through one writable folder, because
+/// <c>wsb exec</c> returns neither output nor the remote exit code.
 /// </para>
 /// </remarks>
 public sealed class SandboxHost(
     IWsbClient? wsb = null,
     ToolsCache? tools = null,
     SandboxStateStore? store = null,
-    SandboxLayout? layout = null)
+    SandboxLayout? layout = null,
+    AirlockConfigStore? config = null)
 {
     private readonly IWsbClient _wsb = wsb ?? new WsbClient();
     private readonly ToolsCache _tools = tools ?? new ToolsCache();
     private readonly SandboxStateStore _store = store ?? new SandboxStateStore();
     private readonly SandboxLayout _layout = layout ?? SandboxLayout.Default;
+    private readonly AirlockConfigStore _config = config ?? new AirlockConfigStore();
 
     public SandboxLayout Layout => _layout;
 
@@ -65,7 +64,6 @@ public sealed class SandboxHost(
 
         if (running.Count == 0)
         {
-            // Nothing is running, so whatever we recorded is history and the key with it.
             if (state is not null)
             {
                 _store.Clear();
@@ -88,52 +86,63 @@ public sealed class SandboxHost(
     }
 
     /// <summary>
-    /// Works out whether a running sandbox is one of ours by trying to log into it.
+    /// Works out whether a running sandbox is one of ours by writing into it and seeing where it
+    /// lands.
     /// </summary>
     /// <remarks>
     /// <para>
     /// There is no way to ask <c>wsb</c> what a sandbox has mounted - <c>list</c> reports only ids,
-    /// and <c>exec</c> returns neither output nor the remote exit code, so "does the tools folder
-    /// exist" cannot be answered from the host. The SSH key can, and it is better evidence: the
-    /// keypair is generated per sandbox and its public half is written only into that sandbox's
-    /// <c>administrators_authorized_keys</c>. If it authenticates, this Airlock install provisioned
-    /// that sandbox.
+    /// and <c>exec</c> returns neither output nor the remote exit code. But our handoff folder is
+    /// mapped read-write from a folder we own, so telling the guest to write a nonce into it and
+    /// finding that nonce on our side proves the sandbox has our folder mapped, and is therefore
+    /// ours.
     /// </para>
     /// <para>
-    /// This is what lets Airlock recover from a lost or corrupt state file instead of being locked
-    /// out of its own sandbox. If the key is gone too, ownership genuinely cannot be proven and the
-    /// sandbox is left alone.
+    /// This is what lets Airlock recover from a lost state file instead of being locked out of its
+    /// own sandbox, and what stops it touching a Windows Sandbox the user opened themselves.
     /// </para>
     /// </remarks>
     private async Task<SandboxState?> TryAdoptAsync(
         IReadOnlyList<string> running,
         CancellationToken cancellationToken)
     {
-        if (!File.Exists(_layout.PrivateKeyPath))
+        if (!Directory.Exists(_layout.OutDirectory))
         {
             return null;
         }
 
         foreach (var id in running)
         {
-            var ip = await _wsb.GetIpAsync(id, cancellationToken).ConfigureAwait(false);
+            var nonce = Guid.NewGuid().ToString("N");
 
-            if (string.IsNullOrEmpty(ip))
+            TryDelete(_layout.ProbePath);
+
+            await _wsb.ExecAsync(
+                id,
+                $"cmd.exe /c echo {nonce}> {SandboxPaths.Out}\\probe.txt",
+                WsbRunAs.System,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            if (!File.Exists(_layout.ProbePath))
             {
                 continue;
             }
 
-            if (!await SshLauncher.ProbeAsync(_layout, ip, cancellationToken).ConfigureAwait(false))
+            var written = (await File.ReadAllTextAsync(_layout.ProbePath, cancellationToken)
+                .ConfigureAwait(false)).Trim();
+
+            TryDelete(_layout.ProbePath);
+
+            if (!written.Equals(nonce, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            // Folders cannot be recovered - nothing on the host records what was attached once the
-            // state file is gone - so the rebuilt record says so rather than claiming none.
+            // Airlocks cannot be recovered - nothing on the host records which of the configured
+            // ones this sandbox actually mounted - so the rebuilt record says so.
             var state = new SandboxState
             {
                 Id = id,
-                IpAddress = ip,
                 StartedUtc = DateTimeOffset.UtcNow,
                 Adopted = true,
             };
@@ -147,11 +156,15 @@ public sealed class SandboxHost(
     }
 
     /// <summary>
-    /// Starts and provisions the sandbox if it is not already running, and returns its state.
+    /// Starts the sandbox with every configured tool and airlock mounted, and provisions it.
     /// </summary>
+    /// <remarks>
+    /// The desktop is deliberately <i>not</i> opened here. It inherits machine environment at logon
+    /// and never re-reads it, so the window has to come up after provisioning has finished setting
+    /// PATH - which is the caller's job, once this returns.
+    /// </remarks>
     public async Task<SandboxState> EnsureRunningAsync(
         IProgress<(SandboxPhase Phase, string Detail)>? progress = null,
-        int memoryInMB = 8192,
         CancellationToken cancellationToken = default)
     {
         if (await GetStateAsync(cancellationToken).ConfigureAwait(false) is { } existing)
@@ -161,7 +174,7 @@ public sealed class SandboxHost(
 
         Report(progress, SandboxPhase.Preflight, "Checking host");
 
-        // Windows Sandbox is single-instance. Anything running that we did not record is someone
+        // Windows Sandbox is single-instance. Anything running that we could not claim is someone
         // else's - very likely the user's own Windows Sandbox window - and must not be touched.
         var running = await _wsb.ListAsync(cancellationToken).ConfigureAwait(false);
         if (running.Count > 0)
@@ -171,9 +184,8 @@ public sealed class SandboxHost(
                 "and Windows allows only one at a time. Close it and try again.");
         }
 
-        await _tools.EnsureOpenSshAsync(
-            new Progress<string>(m => Report(progress, SandboxPhase.Preflight, m)),
-            cancellationToken).ConfigureAwait(false);
+        var config = _config.LoadOrCreate();
+        _config.RefreshDetected(config);
 
         Report(progress, SandboxPhase.Staging, "Preparing sandbox");
 
@@ -187,54 +199,39 @@ public sealed class SandboxHost(
 
         try
         {
-            await SshKeys.GenerateAsync(_layout, cancellationToken).ConfigureAwait(false);
-            SetupScript.Write(_layout, BuildPathPrepend(), BuildMachineEnv());
+            var mounts = BuildMounts(config, out var missing);
 
-            // No project is mapped at start. Folders are attached later, on demand, which is what
-            // lets one sandbox serve several projects.
-            var config = new SandboxConfig
+            foreach (var gone in missing)
             {
-                MemoryInMB = memoryInMB,
-                MappedFolders =
-                [
-                    new MappedFolder(_tools.Root, SandboxPaths.Tools, ReadOnly: true),
-                    new MappedFolder(_layout.ShareDirectory, SandboxPaths.Session, ReadOnly: true),
-                    .. DotnetMount(),
-                ],
-            };
+                Report(progress, SandboxPhase.Staging, $"Skipping '{gone}': its folder is gone");
+            }
+
+            SetupScript.Write(_layout, BuildPathPrepend(config), BuildMachineEnv(config), config.Network);
+            SetupScript.WriteSecrets(_layout, config.Secrets);
+
+            var sandbox = new SandboxConfig { MemoryInMB = config.MemoryMb, MappedFolders = mounts };
 
             await File.WriteAllTextAsync(
-                _layout.ConfigPath, SandboxConfigWriter.ToPrettyXml(config), cancellationToken)
+                _layout.ConfigPath, SandboxConfigWriter.ToPrettyXml(sandbox), cancellationToken)
                 .ConfigureAwait(false);
 
             Report(progress, SandboxPhase.Starting, "Starting sandbox");
-            sandboxId = await _wsb
-                .StartAsync(sandboxId, SandboxConfigWriter.ToInlineXml(config), cancellationToken)
+            sandboxId = await StartWithRetryAsync(
+                sandboxId, SandboxConfigWriter.ToInlineXml(sandbox), progress, cancellationToken)
                 .ConfigureAwait(false);
             started = true;
 
             Report(progress, SandboxPhase.Booting, "Waiting for the sandbox to boot");
             await WaitForBootAsync(sandboxId, progress, cancellationToken).ConfigureAwait(false);
 
-            // wsb exec blocks until the script exits, but reports nothing about how it went.
-            Report(progress, SandboxPhase.Provisioning, "Installing SSH and toolchain (about a minute)");
-            await _wsb.ExecAsync(
-                sandboxId,
-                $"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {SandboxPaths.SetupScript}",
-                WsbRunAs.System,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
-            Report(progress, SandboxPhase.Networking, "Waiting for an IP address");
-            var ip = await WaitForIpAsync(sandboxId, cancellationToken).ConfigureAwait(false);
-
-            Report(progress, SandboxPhase.WaitingForSsh, "Verifying the connection");
-            await WaitForSshAsync(sandboxId, ip, cancellationToken).ConfigureAwait(false);
+            Report(progress, SandboxPhase.Provisioning, "Setting up tools and paths");
+            await ProvisionAsync(sandboxId, cancellationToken).ConfigureAwait(false);
 
             var state = new SandboxState
             {
                 Id = sandboxId,
-                IpAddress = ip,
                 StartedUtc = DateTimeOffset.UtcNow,
+                Folders = [.. config.Airlocks.Select(a => new AttachedFolder(a.Host, SandboxPaths.ForProject(a.Name)))],
             };
 
             _store.Save(state);
@@ -244,7 +241,6 @@ public sealed class SandboxHost(
         }
         catch
         {
-            // Nothing owns the sandbox yet, so a half-built one has to be cleaned up here.
             if (started)
             {
                 await _wsb.StopAsync(sandboxId, CancellationToken.None).ConfigureAwait(false);
@@ -254,108 +250,294 @@ public sealed class SandboxHost(
             _layout.Delete();
             throw;
         }
+        finally
+        {
+            // Whatever happened, the credential handoff must not be left lying about.
+            SetupScript.DeleteSecrets(_layout);
+        }
     }
 
     /// <summary>
-    /// Maps a project into the running sandbox read-write, and returns its path inside.
+    /// Starts the sandbox, retrying while the previous one is still letting go of its files.
     /// </summary>
     /// <remarks>
-    /// Re-attaching a folder that is already mapped is a no-op, so running <c>airlock</c> twice in
-    /// the same place costs nothing.
+    /// <c>wsb stop</c> returns before teardown finishes, so a start soon after one fails with
+    /// <c>0x80070020</c> - which stopping and immediately restarting makes easy to hit. Waiting and
+    /// trying again is the whole fix; the condition clears within a few seconds.
     /// </remarks>
+    private async Task<string> StartWithRetryAsync(
+        string requestedId,
+        string inlineXml,
+        IProgress<(SandboxPhase, string)>? progress,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(60);
+        var announced = false;
+
+        while (true)
+        {
+            try
+            {
+                return await _wsb.StartAsync(requestedId, inlineXml, cancellationToken).ConfigureAwait(false);
+            }
+            catch (WsbException ex) when (ex.IsResourceBusy && DateTimeOffset.UtcNow < deadline)
+            {
+                if (!announced)
+                {
+                    announced = true;
+                    Report(progress, SandboxPhase.Starting, "Waiting for the previous sandbox to finish closing");
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs setup.ps1 and waits for its verdict.
+    /// </summary>
+    /// <remarks>
+    /// <c>wsb exec</c> blocks until the script exits but says nothing about how it went, so the
+    /// answer comes from the file the script writes into the shared folder.
+    /// </remarks>
+    private async Task ProvisionAsync(string sandboxId, CancellationToken cancellationToken)
+    {
+        TryDelete(_layout.ReadyPath);
+
+        await _wsb.ExecAsync(
+            sandboxId,
+            $"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {SandboxPaths.SetupScript}",
+            WsbRunAs.System,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(3);
+
+        while (!File.Exists(_layout.ReadyPath))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (DateTimeOffset.UtcNow > deadline)
+            {
+                throw new SessionException("Provisioning never reported back." + ReadSetupLog());
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+        }
+
+        var verdict = await File.ReadAllTextAsync(_layout.ReadyPath, cancellationToken).ConfigureAwait(false);
+
+        if (!verdict.Contains("\"ok\":true", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SessionException($"Provisioning failed: {verdict.Trim()}{ReadSetupLog()}");
+        }
+    }
+
+    private string ReadSetupLog()
+    {
+        var log = System.IO.Path.Combine(_layout.OutDirectory, "setup.log");
+
+        if (!File.Exists(log))
+        {
+            return string.Empty;
+        }
+
+        var lines = File.ReadAllLines(log).TakeLast(20);
+
+        return Environment.NewLine + Environment.NewLine + string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>
+    /// Every mount the sandbox starts with: tools read-only, airlocks read-write, plus Airlock's own
+    /// two folders.
+    /// </summary>
+    /// <param name="missing">Configured entries whose host folder no longer exists.</param>
+    private List<MappedFolder> BuildMounts(AirlockConfig config, out List<string> missing)
+    {
+        missing = [];
+
+        var mounts = new List<MappedFolder>
+        {
+            new(_layout.ShareDirectory, SandboxPaths.Session, ReadOnly: true),
+            new(_layout.OutDirectory, SandboxPaths.Out, ReadOnly: false),
+        };
+
+        // The staged agent CLI, which is Airlock's own rather than a configured tool.
+        if (Directory.Exists(_tools.Root))
+        {
+            mounts.Add(new MappedFolder(_tools.Root, SandboxPaths.ForTool("airlock"), ReadOnly: true));
+        }
+
+        foreach (var tool in config.Tools)
+        {
+            if (!Directory.Exists(tool.Host))
+            {
+                missing.Add(tool.Id);
+                continue;
+            }
+
+            mounts.Add(new MappedFolder(tool.Host, SandboxPaths.ForTool(tool.Id), ReadOnly: true));
+        }
+
+        foreach (var airlock in config.Airlocks)
+        {
+            if (!Directory.Exists(airlock.Host))
+            {
+                missing.Add(airlock.Name);
+                continue;
+            }
+
+            mounts.Add(new MappedFolder(airlock.Host, SandboxPaths.ForProject(airlock.Name), ReadOnly: false));
+        }
+
+        return mounts;
+    }
+
+    /// <summary>PATH entries for every configured tool, in configuration order.</summary>
+    private List<string> BuildPathPrepend(AirlockConfig config)
+    {
+        var path = new List<string>();
+
+        foreach (var tool in config.Tools.Where(t => Directory.Exists(t.Host)))
+        {
+            var mount = SandboxPaths.ForTool(tool.Id);
+
+            path.AddRange(tool.PathEntries.Select(entry =>
+                string.IsNullOrEmpty(entry) ? mount : System.IO.Path.Combine(mount, entry)));
+        }
+
+        if (Directory.Exists(_tools.ClaudeDirectory))
+        {
+            path.Add(System.IO.Path.Combine(SandboxPaths.ForTool("airlock"), "claude"));
+        }
+
+        return path;
+    }
+
+    private static Dictionary<string, string> BuildMachineEnv(AirlockConfig config)
+    {
+        var env = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["AIRLOCK"] = "1",
+        };
+
+        foreach (var tool in config.Tools.Where(t => Directory.Exists(t.Host)))
+        {
+            var mount = SandboxPaths.ForTool(tool.Id);
+
+            foreach (var (name, value) in tool.EnvEntries)
+            {
+                // {mount} is the only substitution: a tool cannot know its sandbox path until now.
+                env[name] = value.Replace("{mount}", mount, StringComparison.Ordinal);
+            }
+        }
+
+        return env;
+    }
+
+    /// <summary>
+    /// Mounts an airlock into a sandbox that is already running, for one added after start.
+    /// </summary>
     public async Task<string> AttachAsync(
         SandboxState state,
-        ResolvedProject project,
+        AirlockDefinition airlock,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(airlock);
 
-        var already = state.Folders
-            .FirstOrDefault(f => f.HostPath.Equals(project.HostPath, StringComparison.OrdinalIgnoreCase));
+        var sandboxPath = SandboxPaths.ForProject(airlock.Name);
 
-        if (already is not null)
+        if (state.Folders.Any(f => f.HostPath.Equals(airlock.Host, StringComparison.OrdinalIgnoreCase)))
         {
-            return already.SandboxPath;
+            return sandboxPath;
         }
 
-        var sandboxPath = AllocateSandboxPath(state, project.Name);
-
-        await _wsb.ShareAsync(state.Id, project.HostPath, sandboxPath, allowWrite: true, cancellationToken)
+        await _wsb.ShareAsync(state.Id, airlock.Host, sandboxPath, allowWrite: true, cancellationToken)
             .ConfigureAwait(false);
 
-        state.Folders.Add(new AttachedFolder(project.HostPath, sandboxPath));
+        state.Folders.Add(new AttachedFolder(airlock.Host, sandboxPath));
         _store.Save(state);
 
         return sandboxPath;
     }
 
     /// <summary>
-    /// Two projects can share a leaf name, and they cannot share a path inside the sandbox, so the
-    /// second one gets a suffix.
+    /// Launches a tool in the sandbox's desktop, in the given airlock.
     /// </summary>
-    private static string AllocateSandboxPath(SandboxState state, string name)
-    {
-        var candidate = SandboxPaths.ForProject(name);
-        var suffix = 2;
-
-        while (state.Folders.Any(f => f.SandboxPath.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
-        {
-            candidate = SandboxPaths.ForProject($"{name}-{suffix}");
-            suffix++;
-        }
-
-        return candidate;
-    }
-
-    /// <summary>Runs a command in the sandbox and returns its exit code.</summary>
-    public Task<int> ConnectAsync(
+    /// <remarks>
+    /// <para>
+    /// <c>-r ExistingLogin</c> runs in the interactive session, which is what puts a real window on
+    /// screen - but it needs the desktop to be logged on, and that only happens once a client is
+    /// attached. So a failure here is treated as "no window yet": open one, wait for the session,
+    /// and try once more.
+    /// </para>
+    /// <para>
+    /// The launch goes through <c>cmd /c start</c> because <c>wsb exec</c> blocks until its command
+    /// exits, and we want the prompt back rather than to wait on a window the user is working in.
+    /// </para>
+    /// </remarks>
+    public async Task OpenAsync(
         SandboxState state,
         string sandboxPath,
         IReadOnlyList<string> command,
-        IProgress<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(command);
 
-        // Staged on first use rather than at startup, so someone who never runs Claude never pays
-        // for the 216 MB copy. The tools folder is a live mapping, so a file added now is visible
-        // inside the already-running sandbox immediately.
-        if (IsClaude(command))
+        var title = System.IO.Path.GetFileName(sandboxPath.TrimEnd('\\'));
+        var tool = command.Count == 0 ? string.Empty : string.Join(' ', command);
+        var launch = $"cmd.exe /c start \"{title}\" cmd.exe /k {tool}".TrimEnd();
+
+        if (await _wsb.ExecAsync(state.Id, launch, WsbRunAs.ExistingLogin, sandboxPath, cancellationToken)
+                .ConfigureAwait(false))
         {
-            _tools.EnsureClaude(progress);
+            return;
         }
 
-        var effective = command.Count > 0 ? ResolveCommand(command) : ["powershell.exe", "-NoLogo", "-NoExit"];
+        // No interactive session yet. Opening the window creates one.
+        await _wsb.OpenDesktopAsync(state.Id, cancellationToken).ConfigureAwait(false);
+        await WaitForDesktopAsync(state.Id, cancellationToken).ConfigureAwait(false);
 
-        return SshLauncher.ConnectAsync(
-            _layout,
-            state.IpAddress,
-            SshLauncher.BuildRemoteCommand(sandboxPath, effective),
-            CollectSecrets(),
-            cancellationToken);
+        if (!await _wsb.ExecAsync(state.Id, launch, WsbRunAs.ExistingLogin, sandboxPath, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            throw new SessionException(
+                "The sandbox is running but would not launch anything in its desktop. " +
+                "Try 'airlock connect' and see what state the window is in.");
+        }
     }
 
-    /// <summary>
-    /// Opens the sandbox's desktop window.
-    /// </summary>
-    /// <remarks>
-    /// The desktop signs in as Windows Sandbox's own default user, <c>WDAGUtilityAccount</c>, not as
-    /// the <c>airlock</c> account that SSH sessions use. The two are separate Windows sessions with
-    /// separate profiles, so anything done in the window - a browser sign-in, a tool installed into
-    /// the user profile - does not carry into the agent's session. Mapped folders are shared, so it
-    /// is genuinely useful for looking at files, watching what the agent did, or debugging a sandbox
-    /// that came up wrong.
-    /// </remarks>
-    public async Task OpenDesktopAsync(SandboxState state, CancellationToken cancellationToken = default)
+    /// <summary>Waits for the desktop session to exist, by probing the thing that needs it.</summary>
+    private async Task WaitForDesktopAsync(string sandboxId, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(2);
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (await _wsb.ExecAsync(sandboxId, "cmd.exe /c exit 0", WsbRunAs.ExistingLogin,
+                    cancellationToken: cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new SessionException("The sandbox desktop never finished signing in.");
+    }
+
+    /// <summary>Opens the sandbox's desktop window.</summary>
+    public Task OpenDesktopAsync(SandboxState state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
 
-        await _wsb.OpenDesktopAsync(state.Id, cancellationToken).ConfigureAwait(false);
+        return _wsb.OpenDesktopAsync(state.Id, cancellationToken);
     }
 
-    /// <summary>Destroys the sandbox and removes the key that went with it.</summary>
+    /// <summary>Destroys the sandbox and clears what we recorded about it.</summary>
     /// <returns>False when there is no sandbox Airlock can prove is its own.</returns>
     public async Task<bool> StopAsync(CancellationToken cancellationToken = default)
     {
@@ -379,10 +561,9 @@ public sealed class SandboxHost(
     /// Stops a sandbox by id without asking whether it is ours, and clears our own state either way.
     /// </summary>
     /// <remarks>
-    /// The escape hatch for the case where a sandbox really is ours but ownership can no longer be
-    /// proven - an interrupted run that removed the key while the VM survived. Without this, Airlock
-    /// refuses to start <i>and</i> refuses to stop, and the only way out is <c>wsb stop --id</c>.
-    /// Deciding to use it is the caller's, since the sandbox may belong to the user instead.
+    /// The escape hatch for a sandbox that really is ours but can no longer be proven so - an
+    /// interrupted run that removed the handoff folder while the VM survived. Without this, Airlock
+    /// refuses to start <i>and</i> refuses to stop.
     /// </remarks>
     public async Task ForceStopAsync(string id, CancellationToken cancellationToken = default)
     {
@@ -390,73 +571,29 @@ public sealed class SandboxHost(
 
         await _wsb.StopAsync(id, cancellationToken).ConfigureAwait(false);
 
+        // wsb stop returns before teardown finishes, and the next start fails with 0x80070020 while
+        // the old VM still holds its files. Waiting for it to leave the list closes that window here
+        // as well as at the start end, so `airlock stop; airlock start` behaves.
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var running = await _wsb.ListAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!running.Contains(id, StringComparer.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+        }
+
         _store.Clear();
         _layout.Delete();
     }
 
-    /// <summary>Points a bare agent name at the staged binary; anything else runs off the guest PATH.</summary>
-    public static IReadOnlyList<string> ResolveCommand(IReadOnlyList<string> command)
-    {
-        ArgumentNullException.ThrowIfNull(command);
-
-        if (command.Count == 0 || !IsClaude(command))
-        {
-            return command;
-        }
-
-        return new List<string>(command) { [0] = SandboxPaths.ClaudeExe };
-    }
-
-    private static bool IsClaude(IReadOnlyList<string> command) =>
-        command.Count > 0 &&
-        System.IO.Path.GetFileNameWithoutExtension(command[0])
-            .Equals("claude", StringComparison.OrdinalIgnoreCase);
-
-    private static IEnumerable<MappedFolder> DotnetMount()
-    {
-        var dotnet = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet");
-
-        if (Directory.Exists(dotnet))
-        {
-            yield return new MappedFolder(dotnet, SandboxPaths.Dotnet, ReadOnly: true);
-        }
-    }
-
-    private static List<string> BuildPathPrepend() =>
-    [
-        SandboxPaths.Dotnet,
-        SandboxPaths.Claude,
-        SandboxPaths.OpenSsh,
-    ];
-
-    private static Dictionary<string, string> BuildMachineEnv() => new(StringComparer.Ordinal)
-    {
-        ["DOTNET_ROOT"] = SandboxPaths.Dotnet,
-        ["DOTNET_NOLOGO"] = "1",
-        ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
-        ["POWERSHELL_TELEMETRY_OPTOUT"] = "1",
-        ["AIRLOCK"] = "1",
-    };
-
-    /// <summary>
-    /// Picks up the host's agent credentials so the session starts already authenticated. They
-    /// travel in ssh.exe's own environment via SendEnv, so they reach no file and no argument list.
-    /// </summary>
-    private static Dictionary<string, string> CollectSecrets()
-    {
-        var secrets = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        foreach (var name in SetupScript.AcceptedEnvNames)
-        {
-            if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } value)
-            {
-                secrets[name] = value;
-            }
-        }
-
-        return secrets;
-    }
+    /// <summary>Stages the agent CLI, so `airlock open claude` has something to launch.</summary>
+    public void EnsureAgent(IProgress<string>? progress) => _tools.EnsureClaude(progress);
 
     private async Task WaitForBootAsync(
         string id,
@@ -492,107 +629,21 @@ public sealed class SandboxHost(
         throw new SessionException("The sandbox never finished booting.");
     }
 
-    private async Task<string> WaitForIpAsync(string id, CancellationToken cancellationToken)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddMinutes(2);
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (await _wsb.GetIpAsync(id, cancellationToken).ConfigureAwait(false) is { Length: > 0 } ip)
-            {
-                return ip;
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-        }
-
-        throw new SessionException("The sandbox never reported an IP address.");
-    }
-
-    /// <summary>
-    /// Waits for the port, then proves the whole auth path works. On failure this is where the
-    /// provisioning log gets retrieved, since that is the only channel the sandbox has.
-    /// </summary>
-    private async Task WaitForSshAsync(string id, string ip, CancellationToken cancellationToken)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddMinutes(3);
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (await IsPortOpenAsync(ip, 22, cancellationToken).ConfigureAwait(false)
-                && await SshLauncher.ProbeAsync(_layout, ip, cancellationToken).ConfigureAwait(false))
-            {
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
-        }
-
-        var log = await TryRetrieveSetupLogAsync(id, cancellationToken).ConfigureAwait(false);
-
-        throw new SessionException(
-            "The sandbox booted but never accepted an SSH connection." +
-            (log is null ? string.Empty : Environment.NewLine + Environment.NewLine + log));
-    }
-
-    private static async Task<bool> IsPortOpenAsync(string ip, int port, CancellationToken cancellationToken)
+    private static void TryDelete(string path)
     {
         try
         {
-            using var client = new TcpClient();
-            await client.ConnectAsync(ip, port, cancellationToken).ConfigureAwait(false);
-
-            return client.Connected;
-        }
-        catch (SocketException)
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Attaches a writable folder <i>after the fact</i> to copy the log out, because
-    /// <c>wsb exec</c> returns neither output nor the remote exit code.
-    /// </summary>
-    private async Task<string?> TryRetrieveSetupLogAsync(string id, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _wsb.ShareAsync(id, _layout.OutDirectory, SandboxPaths.Out, allowWrite: true, cancellationToken)
-                .ConfigureAwait(false);
-
-            await _wsb.ExecAsync(
-                id,
-                $"cmd.exe /c copy {SandboxPaths.SetupLog} {SandboxPaths.Out}\\ & "
-                + $"copy {SandboxPaths.SetupResult} {SandboxPaths.Out}\\",
-                WsbRunAs.System,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
-            var ready = System.IO.Path.Combine(_layout.OutDirectory, "ready.json");
-            if (File.Exists(ready))
+            if (File.Exists(path))
             {
-                return await File.ReadAllTextAsync(ready, cancellationToken).ConfigureAwait(false);
-            }
-
-            var log = System.IO.Path.Combine(_layout.OutDirectory, "setup.log");
-            if (File.Exists(log))
-            {
-                var lines = await File.ReadAllLinesAsync(log, cancellationToken).ConfigureAwait(false);
-
-                return string.Join(Environment.NewLine, lines.TakeLast(20));
+                File.Delete(path);
             }
         }
-#pragma warning disable CA1031 // Diagnostics are best-effort; failing here must not replace the real error.
-        catch (Exception)
-#pragma warning restore CA1031
+        catch (IOException)
         {
         }
-
-        return null;
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private static void Report(

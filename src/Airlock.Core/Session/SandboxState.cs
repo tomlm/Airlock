@@ -10,15 +10,13 @@ public sealed record AttachedFolder(string HostPath, string SandboxPath);
 /// What Airlock remembers about the sandbox between invocations.
 /// </summary>
 /// <remarks>
-/// The sandbox outlives any single <c>airlock</c> command, so its id, address and attached folders
+/// The sandbox outlives any single <c>airlock</c> command, so its id and attached folders
 /// have to survive on disk. Windows Sandbox allows only one instance, so there is at most one of
 /// these at a time.
 /// </remarks>
 public sealed class SandboxState
 {
     public required string Id { get; set; }
-
-    public required string IpAddress { get; set; }
 
     public DateTimeOffset StartedUtc { get; set; }
 

@@ -27,8 +27,24 @@ public sealed class SandboxLayout
     /// <summary>Never mapped. The private key would otherwise be readable by the agent.</summary>
     public string KeyDirectory => System.IO.Path.Combine(Root, "key");
 
-    /// <summary>Attached read-write only when provisioning fails, to retrieve the log.</summary>
+    /// <summary>
+    /// Mapped read-write, and the only way the guest can tell the host anything.
+    /// </summary>
+    /// <remarks>
+    /// <c>wsb exec</c> returns neither output nor the remote exit code, so provisioning reports back
+    /// by writing <c>ready.json</c> here. It also carries the setup log home on failure, and the
+    /// credential handoff on the way in.
+    /// </remarks>
     public string OutDirectory => System.IO.Path.Combine(Root, "out");
+
+    /// <summary>Where provisioning writes its verdict. Its appearance is the success signal.</summary>
+    public string ReadyPath => System.IO.Path.Combine(OutDirectory, "ready.json");
+
+    /// <summary>The credential handoff. Deleted by the guest, then by the host.</summary>
+    public string SecretsPath => System.IO.Path.Combine(OutDirectory, "secrets.json");
+
+    /// <summary>Used to prove a running sandbox is ours, now that there is no key to try.</summary>
+    public string ProbePath => System.IO.Path.Combine(OutDirectory, "probe.txt");
 
     public string PrivateKeyPath => System.IO.Path.Combine(KeyDirectory, "id_ed25519");
 

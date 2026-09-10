@@ -189,3 +189,44 @@ is generated per sandbox and its public half is written only into that sandbox's
 Verified: with `sandbox.json` deleted while a sandbox was running, `airlock list` recovered the same
 id by signing in. Attached folders cannot be recovered - nothing on the host records them - so the
 rebuilt record is flagged and `airlock list` says so instead of showing an empty table.
+
+
+## The GUI pivot (S14)
+
+SSH was removed and the sandbox became a configured machine driven through its own desktop. What the
+live runs established:
+
+| Question | Result |
+|---|---|
+| Do configured tools land on PATH? | **Yes.** `dotnet`, `git` (via its `cmd` subfolder), `node` and `python` all resolve to `C:irlock\_tools_\<id>\...` inside the guest. |
+| Does `{mount}` expansion work? | **Yes.** `DOTNET_ROOT` came out as `C:irlock\_tools_\dotnet`. |
+| Do credentials arrive without touching a command line? | **Yes.** The API key was set in machine environment, and the handoff file was gone from both sides afterwards. |
+| Does `open` put a window on the desktop? | **Yes.** `wsb exec -r ExistingLogin -d <airlock> -c "cmd /c start ... cmd /k <tool>"` produced a cmd window in the right folder. |
+| Is the read-only invariant intact? | **Yes** - see the subtlety below. |
+| Does ownership survive a lost state file? | **Yes**, via the nonce probe. |
+
+### `_tools_` is not itself a mount
+
+Writing to `C:irlock\_tools_\_probe.txt` **succeeds**, which looks alarming until you notice
+that folder is not mapped from anywhere: it is ordinary sandbox-local disk that merely holds the
+mount points. The per-tool folders under it are the real host mounts, and writing to
+`C:irlock\_tools_\dotnet\` is correctly **DENIED**.
+
+Worth knowing when writing a test: probing the container rather than a mount silently proves nothing.
+
+### `wsb stop` returns before the sandbox has let go
+
+Starting a sandbox shortly after stopping one fails with
+`The process cannot access the file because it is being used by another process (0x80070020)`.
+Reproduced reliably by `stop` immediately followed by `start`; the third attempt in a row succeeded,
+which is what identified it as a race rather than a fault.
+
+Handled at both ends: `stop` now waits for the id to leave `wsb list`, and `start` retries while the
+error is this specific one. Neither alone is quite enough, since a sandbox can also be closed from
+its own window.
+
+### Timings
+
+`start` - boot, provision and show the desktop - measured at 68 s, 75 s and 92 s across runs, almost
+all of it Windows Sandbox booting. Provisioning itself is now only environment and firewall rules,
+so the SSH-era 75-135 s of setup is gone; what remains is the VM coming up.

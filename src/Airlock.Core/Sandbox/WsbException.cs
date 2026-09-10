@@ -30,6 +30,18 @@ public sealed class WsbException : Exception
         StandardOutput.Contains("0x80070002", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// The previous sandbox has not finished letting go of its files yet.
+    /// </summary>
+    /// <remarks>
+    /// <c>wsb stop</c> returns before teardown completes, so starting again straight afterwards
+    /// fails with <c>0x80070020 ERROR_SHARING_VIOLATION</c>. Transient, and worth retrying rather
+    /// than reporting.
+    /// </remarks>
+    public bool IsResourceBusy =>
+        StandardError.Contains("0x80070020", StringComparison.OrdinalIgnoreCase) ||
+        StandardOutput.Contains("0x80070020", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Windows Sandbox is single-instance: a second <c>wsb start</c> fails with
     /// <c>0x800401F6 CO_E_APPSINGLEUSE</c> even when the running sandbox is not Airlock's.
     /// </summary>
