@@ -1,6 +1,6 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/Airlock.Cli/Airlock.Cli.csproj" />
+    <Project Path="src/Airlock/Airlock.csproj" />
     <Project Path="src/Airlock.Core/Airlock.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">

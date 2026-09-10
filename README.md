@@ -96,7 +96,7 @@ into the *same* session are just `airlock shell` in another tab.
 ```powershell
 dotnet build Airlock.slnx
 dotnet test  Airlock.slnx
-dotnet pack  src\Airlock.Cli -c Release
+dotnet pack  src\Airlock -c Release
 ```
 
 ## License
