@@ -176,6 +176,38 @@ public class ToolDetectorTests
     }
 
     [Fact]
+    public void Coreutils_IsFoundByItsUtilitiesNotItsFolderName()
+    {
+        // The install root also holds an uninstaller and setup scripts; only bin is worth mounting,
+        // and only bin has the per-utility hardlinks that make bare `ls` work.
+        var coreutils = ToolDetector.DetectCoreutils();
+
+        if (coreutils is null)
+        {
+            return;
+        }
+
+        Assert.EndsWith("bin", coreutils.Host, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(Path.Combine(coreutils.Host, "ls.exe")));
+    }
+
+    [Fact]
+    public void AFolderNamedCoreutilsWithoutTheUtilities_IsRejected()
+    {
+        var decoy = Path.Combine(Path.GetTempPath(), "airlock-tests", Guid.NewGuid().ToString("N"), "coreutils", "bin");
+        Directory.CreateDirectory(decoy);
+
+        try
+        {
+            Assert.False(ToolDetector.IsUsableCoreutils(decoy));
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(decoy))!, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Git_PutsOnlyItsCmdFolderOnPath()
     {
         var git = ToolDetector.DetectGit();

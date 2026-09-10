@@ -87,6 +87,7 @@ be edited by hand.
     { "id": "dotnet", "host": "C:\\Program Files\\dotnet", "detected": true,
       "env": { "DOTNET_ROOT": "{mount}" } },
     { "id": "git", "host": "C:\\Program Files\\Git", "detected": true, "path": ["cmd"] },
+    { "id": "coreutils", "host": "C:\\Program Files\\coreutils\\bin", "detected": true },
     { "id": "mytools", "host": "S:\\bin\\mytools" }
   ],
 
@@ -97,6 +98,11 @@ be edited by hand.
 `path` lists subfolders of the mount to put on PATH (omitted means the mount root). `{mount}` in
 `env` expands to the tool's path inside the sandbox. `detected` tools are re-probed at every start,
 so a moved or upgraded toolchain repairs itself; hand-added ones are taken literally.
+
+Detected out of the box: .NET, Node, Git, Python, and
+[Coreutils for Windows](https://github.com/microsoft/coreutils) if you have it
+(`winget install Microsoft.Coreutils`), which puts `ls`, `cat`, `head` and the rest on the sandbox's
+PATH.
 
 `secrets` lists **names**, never values. They are read from your host environment at start and handed
 to the guest through a file that both sides delete, so a credential is never written into config and

@@ -14,7 +14,10 @@ public static class ToolDetector
 {
     /// <summary>Everything found on this machine, in a stable order.</summary>
     public static IReadOnlyList<ToolDefinition> DetectAll() =>
-        [.. new[] { DetectDotnet(), DetectNode(), DetectGit(), DetectPython() }.OfType<ToolDefinition>()];
+    [
+        .. new[] { DetectDotnet(), DetectNode(), DetectGit(), DetectPython(), DetectCoreutils() }
+            .OfType<ToolDefinition>(),
+    ];
 
     /// <summary>
     /// The .NET SDK. Mapped read-only, which is enough to build, run, test and publish - but not to
@@ -104,6 +107,68 @@ public static class ToolDetector
             ? null
             : new ToolDefinition("python", found, Detected: true, Path: [string.Empty, "Scripts"]);
     }
+
+    /// <summary>
+    /// Microsoft's Coreutils for Windows - <c>ls</c>, <c>cat</c>, <c>head</c> and the rest.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Installed by <c>winget install Microsoft.Coreutils</c>, which is an Inno installer rather
+    /// than a portable package, so it lands in Program Files rather than under
+    /// <c>WinGet\Packages</c> the way <c>claude.exe</c> does.
+    /// </para>
+    /// <para>
+    /// Only the <c>bin</c> folder is mounted, not the install root, which also holds the
+    /// uninstaller and the setup scripts. It is one multi-call binary published as ~80 hardlinks -
+    /// one per utility - so the folder reports about 700MB while occupying roughly 9MB, and the
+    /// installer ships a file called <c>_why_is_this_700MB_.txt</c> saying so. The hardlinks are
+    /// what make bare <c>ls</c> work rather than <c>coreutils ls</c>, so the probe checks for one
+    /// of them rather than for the multi-call binary, which lives a level up.
+    /// </para>
+    /// </remarks>
+    public static ToolDefinition? DetectCoreutils()
+    {
+        var candidates = new List<string>
+        {
+            System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "coreutils", "bin"),
+            System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "coreutils", "bin"),
+            System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "coreutils", "bin"),
+        };
+
+        // The installer puts itself on PATH, which also covers having been installed elsewhere.
+        candidates.AddRange(PathEntries().Where(e => e.Contains("coreutils", StringComparison.OrdinalIgnoreCase)));
+
+        var found = candidates.FirstOrDefault(IsUsableCoreutils);
+
+        return found is null ? null : new ToolDefinition("coreutils", found, Detected: true);
+    }
+
+    /// <summary>A coreutils bin folder: the per-utility hardlinks are the point of it.</summary>
+    public static bool IsUsableCoreutils(string bin) =>
+        !string.IsNullOrWhiteSpace(bin) &&
+        !bin.Contains("WindowsApps", StringComparison.OrdinalIgnoreCase) &&
+        HasFile(bin, "ls.exe") &&
+        HasFile(bin, "cat.exe");
+
+    /// <summary>
+    /// PATH as Windows currently has it, rather than as this process inherited it.
+    /// </summary>
+    /// <remarks>
+    /// A tool installed after Airlock started is not on the process's own PATH, which is exactly
+    /// the case right after a winget install.
+    /// </remarks>
+    private static IEnumerable<string> PathEntries() =>
+        new[]
+        {
+            Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine),
+            Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User),
+        }
+        .Where(p => !string.IsNullOrEmpty(p))
+        .SelectMany(p => p!.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     /// <summary>
     /// A mountable Python: a real interpreter with its library and scripts beside it, outside the

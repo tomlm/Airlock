@@ -230,3 +230,48 @@ its own window.
 `start` - boot, provision and show the desktop - measured at 68 s, 75 s and 92 s across runs, almost
 all of it Windows Sandbox booting. Provisioning itself is now only environment and firewall rules,
 so the SSH-era 75-135 s of setup is gone; what remains is the VM coming up.
+
+
+## Microsoft.Coreutils as a tool (S15)
+
+`winget install Microsoft.Coreutils` is an **Inno installer**, not a portable package, so it does not
+land under `WinGet\Packages` the way `claude.exe` does. On this machine:
+
+| | |
+|---|---|
+| Install root | `C:\Program Files\coreutils` |
+| What to mount | `C:\Program Files\coreutilsin` |
+| Also in the root | `coreutils.exe`, the uninstaller, `pwsh-install*.ps1` - not worth mounting |
+| Adds itself to PATH | yes, the `bin` folder |
+
+### It ships per-utility hardlinks, which is what makes it useful
+
+The docs describe "a single multi-call binary", which would have meant typing `coreutils ls` rather
+than `ls`. In practice the installer publishes **~80 hardlinks in `bin`**, one per utility, all
+pointing at the same ~9 MB binary that dispatches on `argv[0]`. So `ls.exe` and `cat.exe` genuinely
+exist and bare `ls` works.
+
+The folder therefore reports ~705 MB while occupying about 9 MB. The installer ships a file named
+`_why_is_this_700MB_.txt` whose entire contents are "Because they're all hardlinks."
+
+The probe checks for `ls.exe` and `cat.exe` rather than for `coreutils.exe`, which is a level up and
+not in the mounted folder at all.
+
+### Verified inside the sandbox
+
+```
+ls (coreutils)   C:irlock\_tools_\coreutils\ls.exe
+ls runs          ls (uutils coreutils) 0.11.0
+```
+
+Hardlink metadata is **not** surfaced through the mount - `LinkType` comes back empty inside the
+guest, and every entry reads as an ordinary file of the full size. That costs nothing, because a
+mapped folder is mapped rather than copied: the 19.4 GB `dotnet` mount established that early on.
+Adding coreutils did not move `start` outside its usual range.
+
+### Detection has to read PATH from the registry, not the process
+
+A tool installed while Airlock is running is absent from the current process's `PATH`, which is
+exactly the state right after a winget install. `ToolDetector` reads the Machine and User values
+through `Environment.GetEnvironmentVariable(..., EnvironmentVariableTarget)` instead, so a freshly
+installed tool is found without restarting anything.

@@ -23,7 +23,11 @@ function Ask($label, $ps) {
         "`$r = $ps
 `$r | Out-File -Encoding utf8 'C:\airlock\_out_\answer.txt'"))
     & wsb exec --id $id -r System -c "powershell.exe -NoProfile -EncodedCommand $enc" *> $null
-    $value = if (Test-Path $probe) { (Get-Content $probe -Raw).Trim() } else { '(no answer)' }
+    # An empty answer is a real result (a null property), not a missing one - Trim() on it threw.
+    $value = if (Test-Path $probe) {
+        $c = Get-Content $probe -Raw
+        if ([string]::IsNullOrWhiteSpace($c)) { '(empty)' } else { $c.Trim() }
+    } else { '(no answer)' }
     Write-Host ("  {0,-22} {1}" -f $label, $value)
 }
 
@@ -42,6 +46,15 @@ Ask 'dotnet'      '(Get-Command dotnet -EA SilentlyContinue).Source'
 Ask 'git'         '(Get-Command git -EA SilentlyContinue).Source'
 Ask 'node'        '(Get-Command node -EA SilentlyContinue).Source'
 Ask 'python'      '(Get-Command python -EA SilentlyContinue).Source'
+Ask 'ls (coreutils)' '(Get-Command ls.exe -EA SilentlyContinue).Source'
+# ~80 hardlinks to one 9MB binary. If Sandbox materialised them instead of passing the links
+# through, this folder would cost 700MB rather than 9MB - worth knowing which happens.
+Ask 'ls runs'     '(& ls.exe --version 2>&1 | Select-Object -First 1)'
+Ask 'coreutils MB' '[math]::Round(((Get-ChildItem C:\airlock\_tools_\coreutils -File | Measure-Object -Sum Length).Sum/1MB))'
+# Empty means the mount does not surface hardlink metadata - which is fine, since each entry still
+# reads as a whole binary, and that is what makes bare `ls` work.
+Ask 'ls.exe linktype' '(Get-Item C:\airlock\_tools_\coreutils\ls.exe).LinkType'
+Ask 'ls.exe MB'       '[math]::Round((Get-Item C:\airlock\_tools_\coreutils\ls.exe).Length/1MB,1)'
 Ask 'DOTNET_ROOT' '[Environment]::GetEnvironmentVariable("DOTNET_ROOT","Machine")'
 Ask 'AIRLOCK'     '[Environment]::GetEnvironmentVariable("AIRLOCK","Machine")'
 Ask 'api key set' '[bool][Environment]::GetEnvironmentVariable("ANTHROPIC_API_KEY","Machine")'
