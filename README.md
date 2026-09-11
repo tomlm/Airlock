@@ -1,4 +1,9 @@
+![Icon](https://raw.githubusercontent.com/tomlm/airlock/main/icon.png)
+
 # Airlock
+
+[![Build Status](https://github.com/tomlm/airlock/actions/workflows/BuildAndRunTests.yml/badge.svg)](https://github.com/tomlm/airlock/actions/workflows/BuildAndRunTests.yml) [![NuGet Version](https://img.shields.io/nuget/v/airlock.svg)](https://www.nuget.org/packages/airlock/) [![NuGet Downloads](https://img.shields.io/nuget/dt/airlock.svg)](https://www.nuget.org/packages/airlock/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 
 A Windows Sandbox you configure once and work in. Your toolchains are mounted read-only onto its
 PATH; the projects you open — the *airlocks* — are the only writable folders on your machine.
