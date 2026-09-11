@@ -7,7 +7,7 @@
 
   <ItemGroup>
     <!-- Process execution + command-line parsing. CShell targets net8.0; consumed from net10.0. -->
-    <PackageVersion Include="CShell" Version="3.0.3" />
+    <PackageVersion Include="CShell" Version="3.2.0" />
     <!-- Rendering only: boot status, doctor table, error formatting. No process execution. -->
     <PackageVersion Include="Spectre.Console" Version="0.57.2" />
   </ItemGroup>
