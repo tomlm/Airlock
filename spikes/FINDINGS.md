@@ -38,7 +38,7 @@ AudioInput, VideoInput, ProtectedClient, PrinterRedirection, ClipboardRedirectio
 | **S3** | Is `wsb start --id <guid>` honored? | **YES.** The caller-chosen GUID came back from `start --raw` and `list --raw`. | Write the session state file **before** `wsb start`. The orphan crash-window disappears entirely. |
 | **S4** | Does `wsb exec` propagate the remote exit code? | **NO.** `cmd.exe /c exit 7` -> wsb exit code `0`. | **The exit-code status channel is dead.** wsb's exit code reports only whether *wsb* could dispatch, not what the command did. Remove it as a fallback. |
 | **S4b** | Does `wsb exec` block until the command exits? | **YES.** An 11-second ping took 11.5 s. | We know when `setup.ps1` *finished* - just not whether it *succeeded*. Combine with S9 for the verdict. |
-| **S9** | Does `wsb share -w` work on a **running** sandbox? | **YES.** Attached `C:irlock\out` mid-session; the sandbox wrote `probe.txt`, the host read `hello-from-sandbox` back. | The provisioning-status and log-retrieval channel - attachable **on demand**, so "the project is the only writable host folder" holds for the whole normal session. |
+| **S9** | Does `wsb share -w` work on a **running** sandbox? | **YES.** Attached `C:\airlock\out` mid-session; the sandbox wrote `probe.txt`, the host read `hello-from-sandbox` back. | The provisioning-status and log-retrieval channel - attachable **on demand**, so "the project is the only writable host folder" holds for the whole normal session. |
 | **S8** | Can two sandboxes run at once? | **NO.** Second `wsb start` -> `Application cannot be run more than once (0x800401F6 CO_E_APPSINGLEUSE)`. | **Windows Sandbox is single-instance.** See below. |
 
 ### Timings (warm snapshot)
@@ -180,7 +180,7 @@ rather than inheriting the caller's.
 ## Identifying our own sandbox (S12)
 
 A sandbox's mounts cannot be inspected from the host - `wsb list` returns only ids, and `wsb exec`
-returns neither output nor the remote exit code, so "does `C:irlock	ools` exist" is
+returns neither output nor the remote exit code, so "does `C:\airlock	ools` exist" is
 unanswerable from outside. The **SSH key is the identifier instead**, and a better one: the keypair
 is generated per sandbox and its public half is written only into that sandbox's
 `administrators_authorized_keys`, so a successful login proves *this* Airlock install provisioned
@@ -198,19 +198,152 @@ live runs established:
 
 | Question | Result |
 |---|---|
-| Do configured tools land on PATH? | **Yes.** `dotnet`, `git` (via its `cmd` subfolder), `node` and `python` all resolve to `C:irlock\_tools_\<id>\...` inside the guest. |
-| Does `{mount}` expansion work? | **Yes.** `DOTNET_ROOT` came out as `C:irlock\_tools_\dotnet`. |
+| Do configured tools land on PATH? | **Yes.** `dotnet`, `git` (via its `cmd` subfolder), `node` and `python` all resolve to `C:\tools\<id>\...` inside the guest. |
+| Does `{mount}` expansion work? | **Yes.** `DOTNET_ROOT` came out as `C:\tools\dotnet`. |
 | Do credentials arrive without touching a command line? | **Yes.** The API key was set in machine environment, and the handoff file was gone from both sides afterwards. |
 | Does `open` put a window on the desktop? | **Yes.** `wsb exec -r ExistingLogin -d <airlock> -c "cmd /c start ... cmd /k <tool>"` produced a cmd window in the right folder. |
 | Is the read-only invariant intact? | **Yes** - see the subtlety below. |
 | Does ownership survive a lost state file? | **Yes**, via the nonce probe. |
+| Do host `dotnet tool install -g` tools work in the guest? | **Yes.** `jsonpath.exe` resolved to `C:\tools\dotnet-tools\jsonpath.exe` and ran. The shims are apphosts that find their payload relative to themselves - `jsonpath.exe` embeds the literal `.store\jsonpath-cli\1.0.0\...\JsonPath.dll` and no absolute path - so mounting the whole folder, `.store` included, is what makes them portable. |
 
-### `_tools_` is not itself a mount
+### Edge is installed in the sandbox but not registered with the shell
 
-Writing to `C:irlock\_tools_\_probe.txt` **succeeds**, which looks alarming until you notice
+Opening an `https://` link in a fresh sandbox does nothing at all - and says nothing about it:
+
+```
+Start-Process https://example.com ............ returns, no exception
+rundll32 url.dll,FileProtocolHandler ......... exit 0
+msedge processes afterwards .................. 0
+```
+
+The registration a URL launch needs is simply absent on a fresh image:
+
+```
+HKCR:\https            exists, and declares "URL Protocol"
+HKCR:\https\shell\open\command   MISSING      <- nothing to run
+HKCR:\MSEdgeHTM                  MISSING
+https/http UserChoice ProgId     MISSING
+RegisteredApplications has Edge  False
+```
+
+`msedge.exe` is on disk the whole time and runs perfectly when launched by full path, which is what
+makes this read as a network fault: the browser works, the internet works, but every link is inert.
+Edge registers itself on first run per profile, so a sandbox where someone has already opened Edge
+by hand looks correct and one that nobody has touched does not - which also makes it intermittent to
+diagnose.
+
+`--make-default-browser` is not the fix: current Windows answers it by opening the Settings app
+rather than registering anything, since programmatic default-app changes are locked down.
+
+**The fix is to write the class ourselves**, in provisioning, as SYSTEM:
+
+```
+HKLM\SOFTWARE\Classes\https\shell\open\command
+  = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1
+```
+
+HKLM rather than per-user because `HKCR` is the merge of `HKLM\SOFTWARE\Classes` with
+`HKCU\SOFTWARE\Classes`, and provisioning runs before anyone has logged on to have an HKCU. With
+`UserChoice` absent, ShellExecute falls through to this class. `--single-argument` takes the rest of
+the command line verbatim, so a URL containing spaces or quotes cannot be split into extra
+arguments; it is what Edge registers for itself.
+
+Verified on a sandbox provisioned from scratch, with nothing done by hand:
+
+```
+before: 0 msedge
+after:  8 msedge
+titles: GitHub - anthropics/claude-code ... - Microsoft Edge
+```
+
+Reported as `"browser"` in `ready.json`.
+
+### Windows Firewall: a block rule beats an allow rule, however specific the allow
+
+The sandbox came up with working internet and no name resolution. The cause was Airlock's own
+network rules, written on a wrong assumption that the script stated in its own comment - *"Windows
+Firewall applies the more specific allow over the broad block"*.
+
+It does not. Rule evaluation order is: Windows Service Hardening, connection security rules,
+**authenticated bypass**, **block**, **allow**, default. An explicit block beats an explicit allow
+regardless of how narrow the allow is; the only thing that overrides a block is an authenticated
+bypass rule, which requires IPsec. So the pairing of a broad `Block` over the private ranges with a
+narrow `Allow` for the guest's own subnet could never have worked.
+
+It presented as a DNS fault rather than a firewall one, because **the sandbox's DNS server is its
+default gateway**, which sits inside `172.16.0.0/12`:
+
+```
+ipv4     172.22.144.106/20   Ethernet
+gateway  172.22.144.1
+dns      172.22.144.1        <- inside the blocked /12
+
+airlock-allow-own  Allow  172.22.144.0/20, 172.22.144.1   <- enabled, and inert
+airlock-block-lan  Block  10/8, 172.16/12, 192.168/16, 169.254/16
+
+Resolve-DnsName example.com ....... FAILED (timeout)
+tcp 443 to 1.1.1.1 ................ True      <- public IPs unaffected
+after disabling the block rule ..... ok: 172.66.147.243
+```
+
+Traffic to public addresses was never in a blocked range, so everything except name lookup worked -
+which is a good way to spend an hour blaming DNS.
+
+**The fix is to subtract the exemptions from the blocked set before writing the rule**, so there is
+no allow rule to be overruled. `setup.ps1` computes the complement: for a block at prefix *pB* and an
+exemption at *pS*, walk *p* from *pB+1* to *pS* taking the sibling of the exemption's ancestor at
+each level. `172.16.0.0/12` minus `172.22.144.0/20` becomes eight CIDRs:
+
+```
+172.24.0.0/13, 172.16.0.0/14, 172.20.0.0/15, 172.23.0.0/16,
+172.22.0.0/17, 172.22.192.0/18, 172.22.160.0/19, 172.22.128.0/20
+```
+
+Exempted: the guest's own subnet, its default gateway, its DNS servers, and anything in `allow`.
+Verified from inside the guest afterwards - names resolve, `github.com:443` connects, and the host's
+router (`192.168.68.1`), the host's own SMB (`192.168.68.87:445`), `10.0.0.1` and the rest of
+`172.16.0.0/12` all fail with `AccessDenied`. The invariant holds; only the guest's own segment is
+reachable.
+
+Provisioning now resolves a name before declaring itself ready and reports `"dns"` in `ready.json`,
+so this class of failure is something `airlock start` says out loud.
+
+### A `subst` made by SYSTEM is visible to the desktop
+
+The open question when `A:` was introduced. DOS device maps are per-logon-session, and `setup.ps1`
+runs as SYSTEM via `wsb exec -r System` while the desktop runs as `WDAGUtilityAccount` - a different
+session. It works anyway, because SYSTEM's device map *is* the global one, so the link lands in
+`\GLOBAL??` and every session sees it.
+
+Verified from the desktop's own session rather than from SYSTEM, which is the distinction that
+matters - SYSTEM checking `Test-Path A:\` only proves SYSTEM can see it:
+
+```
+> wsb exec --id <id> -r ExistingLogin -c "cmd /c whoami & if exist A:\ echo VISIBLE & subst"
+e10e4b75-9fd3-4\wdagutilityaccount
+VISIBLE
+A:\: => C:\airlocks
+```
+
+So the subst belongs in provisioning, alongside machine environment, and needs no per-session
+repair. `wsb exec -d A:\<name>` is accepted too, which is what lets `open` hand out the short path.
+
+### Enumerating a folder full of mount points repeats entries
+
+`dir C:\tools` in a guest with eight mapped folders under it lists the complete set, then repeats
+three of them - `node`, `python`, `scripts` came back twice. The generated `.wsb` declares each
+exactly once, and both `cmd`'s `dir` and PowerShell's `Get-ChildItem` show it, so this is the
+sandbox's filesystem redirector rather than anything Airlock emits.
+
+Harmless in practice, since PATH resolution is by name and nothing enumerates that folder - but do
+not write a test that counts what is in there.
+
+### `C:\tools` is not itself a mount
+
+Writing to `C:\tools\_probe.txt` **succeeds**, which looks alarming until you notice
 that folder is not mapped from anywhere: it is ordinary sandbox-local disk that merely holds the
 mount points. The per-tool folders under it are the real host mounts, and writing to
-`C:irlock\_tools_\dotnet\` is correctly **DENIED**.
+`C:\tools\dotnet\` is correctly **DENIED**.
 
 Worth knowing when writing a test: probing the container rather than a mount silently proves nothing.
 
@@ -240,7 +373,7 @@ land under `WinGet\Packages` the way `claude.exe` does. On this machine:
 | | |
 |---|---|
 | Install root | `C:\Program Files\coreutils` |
-| What to mount | `C:\Program Files\coreutilsin` |
+| What to mount | `C:\Program Files\coreutils\bin` |
 | Also in the root | `coreutils.exe`, the uninstaller, `pwsh-install*.ps1` - not worth mounting |
 | Adds itself to PATH | yes, the `bin` folder |
 
@@ -260,7 +393,7 @@ not in the mounted folder at all.
 ### Verified inside the sandbox
 
 ```
-ls (coreutils)   C:irlock\_tools_\coreutils\ls.exe
+ls (coreutils)   C:\tools\coreutils\ls.exe
 ls runs          ls (uutils coreutils) 0.11.0
 ```
 

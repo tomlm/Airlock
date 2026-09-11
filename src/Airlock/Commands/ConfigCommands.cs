@@ -49,7 +49,7 @@ internal static class ConfigCommands
             if (relative.Length == 0)
             {
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[dim]Already an airlock: {existing.Host} -> {SandboxPaths.ForProject(existing.Name)}[/]");
+                    $"[dim]Already an airlock: {existing.Host} -> {SandboxPaths.ForProjectOnDrive(existing.Name)}[/]");
 
                 return (int)ExitCode.Ok;
             }
@@ -57,7 +57,7 @@ internal static class ConfigCommands
             // Mounting it again would put the same files at two paths in the sandbox.
             AnsiConsole.MarkupLineInterpolated(
                 $"[yellow]![/] {project.HostPath} is already inside the airlock '{existing.Name}'.");
-            var inSandbox = System.IO.Path.Combine(SandboxPaths.ForProject(existing.Name), relative);
+            var inSandbox = System.IO.Path.Combine(SandboxPaths.ForProjectOnDrive(existing.Name), relative);
 
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]It is in the sandbox at {inSandbox}; 'airlock open' there starts in it.[/]");
@@ -70,7 +70,7 @@ internal static class ConfigCommands
         store.Save(config);
 
         AnsiConsole.MarkupLineInterpolated(
-            $"Added {project.HostPath} -> {SandboxPaths.ForProject(name)} (read-write)");
+            $"Added {project.HostPath} -> {SandboxPaths.ForProjectOnDrive(name)} (read-write)");
 
         if (name != project.Name)
         {
@@ -200,7 +200,7 @@ internal static class ConfigCommands
     /// command. CShell has no notion of subcommands, so the actions are examples and the dispatch
     /// below is still ours - but the help is generated, and so cannot drift.
     /// </remarks>
-    internal static int Tools(AirlockConfigStore store, IReadOnlyList<string> args)
+    internal static int Tools(AirlockConfigStore store, IReadOnlyList<string> args, bool sandboxRunning)
     {
         var parsed = VerbCli
             .For(ReservedVerbs.Tools, args,
@@ -225,10 +225,10 @@ internal static class ConfigCommands
             ? ShowTools(config)
             : args[0].ToLowerInvariant() switch
             {
-                "add" => AddTool(store, config, args),
-                "remove" or "rm" => RemoveTool(store, config, args),
+                "add" => AddTool(store, config, args, sandboxRunning),
+                "remove" or "rm" => RemoveTool(store, config, args, sandboxRunning),
                 "list" => ShowTools(config),
-                "refresh" => RefreshTools(store, config),
+                "refresh" => RefreshTools(store, config, sandboxRunning),
                 _ => Unknown(args[0]),
             };
     }
@@ -270,7 +270,11 @@ internal static class ConfigCommands
         return (int)ExitCode.Ok;
     }
 
-    private static int AddTool(AirlockConfigStore store, AirlockConfig config, IReadOnlyList<string> args)
+    private static int AddTool(
+        AirlockConfigStore store,
+        AirlockConfig config,
+        IReadOnlyList<string> args,
+        bool sandboxRunning)
     {
         if (args.Count < 2)
         {
@@ -302,10 +306,16 @@ internal static class ConfigCommands
         AnsiConsole.MarkupLineInterpolated(
             $"Added tool '{id}': {host} -> {SandboxPaths.ForTool(id)} (read-only, on PATH)");
 
+        RestartNotice(sandboxRunning);
+
         return (int)ExitCode.Ok;
     }
 
-    private static int RemoveTool(AirlockConfigStore store, AirlockConfig config, IReadOnlyList<string> args)
+    private static int RemoveTool(
+        AirlockConfigStore store,
+        AirlockConfig config,
+        IReadOnlyList<string> args,
+        bool sandboxRunning)
     {
         if (args.Count < 2)
         {
@@ -326,17 +336,47 @@ internal static class ConfigCommands
 
         AnsiConsole.MarkupLineInterpolated($"Removed tool '{tool.Id}'.");
 
+        RestartNotice(sandboxRunning);
+
         return (int)ExitCode.Ok;
     }
 
-    private static int RefreshTools(AirlockConfigStore store, AirlockConfig config)
+    private static int RefreshTools(AirlockConfigStore store, AirlockConfig config, bool sandboxRunning)
     {
+        var changed = store.RefreshDetected(config);
+
         AnsiConsole.MarkupLine(
-            store.RefreshDetected(config)
-                ? "Re-probed the auto-detected tools; some moved."
+            changed
+                ? "Re-probed the machine; the auto-detected tools have changed."
                 : "[dim]Auto-detected tools are all where they were.[/]");
 
-        return ShowTools(config);
+        var result = ShowTools(config);
+
+        if (changed)
+        {
+            RestartNotice(sandboxRunning);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Says that a tool change will not reach the sandbox that is running.
+    /// </summary>
+    /// <remarks>
+    /// Tools are mounted from the configuration when the sandbox starts, and their PATH entries are
+    /// machine environment that the desktop inherits at logon. So neither the mount nor the PATH can
+    /// be added to a session already under way - unlike an airlock, which `open` can share into a
+    /// live sandbox.
+    /// </remarks>
+    private static void RestartNotice(bool sandboxRunning)
+    {
+        if (sandboxRunning)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]![/] The sandbox is running and will not see this until it is restarted: " +
+                "'[bold]airlock stop[/]' then '[bold]airlock start[/]'.");
+        }
     }
 
     private static int Unknown(string what)

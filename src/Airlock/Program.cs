@@ -99,7 +99,10 @@ internal static class Program
                 command.ProjectPath,
                 command.Arguments,
                 await IsRunningAsync(cancellationToken).ConfigureAwait(false)),
-            ReservedVerbs.Tools => ConfigCommands.Tools(Config, command.Arguments),
+            ReservedVerbs.Tools => ConfigCommands.Tools(
+                Config,
+                command.Arguments,
+                await IsRunningAsync(cancellationToken).ConfigureAwait(false)),
             // No arguments after the verb means a shell: you have opened the airlock and stepped in.
             ReservedVerbs.Open =>
                 await OpenSessionAsync(command, command.Arguments, cancellationToken).ConfigureAwait(false),
@@ -264,8 +267,12 @@ internal static class Program
         }
 
         // Always the airlock's own root: the mount is the airlock, and a subfolder rides along.
-        var mounted = await host.AttachAsync(state, airlock, cancellationToken).ConfigureAwait(false);
-        var openAt = relative.Length == 0 ? mounted : System.IO.Path.Combine(mounted, relative);
+        // It mounts on the canonical path; A: is the same folder, and is what to open in and to
+        // show, since it is what someone will be typing for the rest of the session.
+        await host.AttachAsync(state, airlock, cancellationToken).ConfigureAwait(false);
+
+        var onDrive = SandboxPaths.ForProjectOnDrive(airlock.Name);
+        var openAt = relative.Length == 0 ? onDrive : System.IO.Path.Combine(onDrive, relative);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]{project.HostPath} -> {openAt} (read-write)[/]");
 
@@ -333,8 +340,8 @@ internal static class Program
         {
             var (existing, relative) = covering;
             var openAt = relative.Length == 0
-                ? SandboxPaths.ForProject(existing.Name)
-                : System.IO.Path.Combine(SandboxPaths.ForProject(existing.Name), relative);
+                ? SandboxPaths.ForProjectOnDrive(existing.Name)
+                : System.IO.Path.Combine(SandboxPaths.ForProjectOnDrive(existing.Name), relative);
 
             AnsiConsole.MarkupLineInterpolated($"  {project.HostPath} -> {openAt} (read-write)");
 
@@ -353,7 +360,7 @@ internal static class Program
         else
         {
             AnsiConsole.MarkupLineInterpolated(
-                $"  {project.HostPath} -> {SandboxPaths.ForProject(config.AllocateName(project.Name))} (read-write)");
+                $"  {project.HostPath} -> {SandboxPaths.ForProjectOnDrive(config.AllocateName(project.Name))} (read-write)");
             AnsiConsole.MarkupLine("  [dim]a new airlock, which opening would create[/]");
         }
 
@@ -409,7 +416,7 @@ internal static class Program
                     Directory.Exists(airlock.Host)
                         ? Markup.Escape(airlock.Host)
                         : $"[red]{Markup.Escape(airlock.Host)}[/]",
-                    Markup.Escape(SandboxPaths.ForProject(airlock.Name)),
+                    Markup.Escape(SandboxPaths.ForProjectOnDrive(airlock.Name)),
                     OpenState(state, airlock.Host));
             }
 

@@ -4,21 +4,41 @@ namespace Airlock.Sandbox;
 /// Where everything lives inside the sandbox.
 /// </summary>
 /// <remarks>
-/// Airlocks are mounted directly under <see cref="Root"/>, so <c>S:\github\foo</c> becomes
-/// <c>C:\airlock\foo</c> and the path inside reads like the one outside. Airlock's own folders share
-/// that root, so they are wrapped in underscores - <c>_tools_</c>, <c>_session_</c> - to keep them
-/// out of the namespace an airlock name could occupy.
+/// <para>
+/// Every folder Airlock owns is a top-level folder on the guest's C: drive. There is nothing to keep
+/// tidy - the machine is thrown away when the sandbox stops - and putting them at the root keeps
+/// paths short, which is the whole game once a build starts nesting under a workspace.
+/// </para>
+/// <para>
+/// Workspaces live in <see cref="Airlocks"/> and nothing else does, so no name is reserved: an
+/// airlock may be called <c>tools</c> or <c>session</c> without shadowing anything. Two earlier
+/// layouts put workspaces beside Airlock's own folders and needed a naming convention - underscores,
+/// then a dot prefix - to tell them apart; giving them a folder of their own removes the collision
+/// instead of working around it.
+/// </para>
+/// <para>
+/// <see cref="Drive"/> is substituted onto <see cref="Airlocks"/> during provisioning, so
+/// <c>A:\foo</c> and <c>C:\airlocks\foo</c> are the same folder. The short form is the one to show
+/// and to work in, but it is a veneer over the canonical path, and tools that resolve paths for
+/// themselves will still report the long one.
+/// </para>
 /// </remarks>
 public static class SandboxPaths
 {
-    /// <summary>Both the airlocks and Airlock's own folders live here.</summary>
-    public const string Root = @"C:\airlock";
+    /// <summary>Read-write: one folder per airlock, and nothing else.</summary>
+    public const string Airlocks = @"C:\airlocks";
+
+    /// <summary>
+    /// The drive letter <see cref="Airlocks"/> is substituted onto, so every airlock is one letter
+    /// and a name away.
+    /// </summary>
+    public const string Drive = "A:";
 
     /// <summary>Read-only: one folder per configured tool.</summary>
-    public const string Tools = Root + @"\_tools_";
+    public const string Tools = @"C:\tools";
 
     /// <summary>Read-only: the setup script and the non-secret environment it applies.</summary>
-    public const string Session = Root + @"\_session_";
+    public const string Session = @"C:\session";
 
     /// <summary>
     /// Read-write, and the only way the guest can tell the host anything.
@@ -27,33 +47,33 @@ public static class SandboxPaths
     /// <c>wsb exec</c> returns neither output nor the remote exit code, so provisioning reports its
     /// verdict here, the setup log comes home here on failure, and credentials go in this way.
     /// </remarks>
-    public const string Out = Root + @"\_out_";
+    public const string Out = @"C:\out";
 
     /// <summary>
     /// Where setup.ps1 keeps its own log. Deliberately not <see cref="Out"/>, which is a mount
     /// point - mapping onto a folder that already has files in it invites trouble.
     /// </summary>
-    public const string Setup = Root + @"\_setup_";
+    public const string Setup = @"C:\setup";
 
     public const string SetupLog = Setup + @"\setup.log";
 
     public const string SetupScript = Session + @"\setup.ps1";
 
+    /// <summary>Every folder Airlock owns, which is every folder it may safely create or mount on.</summary>
+    public static IReadOnlyList<string> OwnFolders => [Airlocks, Tools, Session, Out, Setup];
+
     /// <summary>
-    /// Whether a folder name belongs to Airlock rather than to an airlock.
+    /// The canonical path an airlock with this name gets inside the sandbox.
     /// </summary>
     /// <remarks>
-    /// The underscore wrapper exists precisely so this can never be ambiguous, but a workspace
-    /// really could be called <c>_tools_</c>, so the check is real rather than assumed.
+    /// This is the path to mount on and the one every tool will resolve back to.
+    /// <see cref="ForProjectOnDrive"/> is the same folder, spelled for a human.
     /// </remarks>
-    public static bool IsReservedName(string name) =>
-        !string.IsNullOrEmpty(name) &&
-        name.Length > 1 &&
-        name[0] == '_' &&
-        name[^1] == '_';
+    public static string ForProject(string name) => System.IO.Path.Combine(Airlocks, name);
 
-    /// <summary>The path an airlock with this name gets inside the sandbox.</summary>
-    public static string ForProject(string name) => System.IO.Path.Combine(Root, name);
+    /// <summary>The short spelling of <see cref="ForProject"/>, by way of <see cref="Drive"/>.</summary>
+    public static string ForProjectOnDrive(string name) =>
+        System.IO.Path.Combine(Drive + "\\", name);
 
     /// <summary>
     /// Where a tool mounts, one folder per tool.

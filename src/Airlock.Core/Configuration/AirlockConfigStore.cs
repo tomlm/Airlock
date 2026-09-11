@@ -77,27 +77,45 @@ public sealed class AirlockConfigStore(string? path = null)
         File.WriteAllText(Path, JsonSerializer.Serialize(config, Options));
     }
 
-    /// <summary>Re-probes detected tools, so a moved or upgraded toolchain repairs itself.</summary>
+    /// <summary>
+    /// Re-probes the machine, so a moved or upgraded toolchain repairs itself and a newly installed
+    /// one is picked up.
+    /// </summary>
+    /// <remarks>
+    /// Adding as well as updating is what lets an existing config benefit from a detector written
+    /// after it was created - otherwise detection would only ever help a fresh install, and everyone
+    /// already using Airlock would have to add the tool by hand. A detected tool is skipped when its
+    /// folder is already mounted under some other id, so a hand-added entry pointing at the same
+    /// place keeps its name rather than being shadowed by a second mount of the same files.
+    /// </remarks>
     /// <returns>True when anything changed and the config was rewritten.</returns>
     public bool RefreshDetected(AirlockConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        var detected = ToolDetector.DetectAll().ToDictionary(t => t.Id, StringComparer.OrdinalIgnoreCase);
         var changed = false;
 
-        for (var i = 0; i < config.Tools.Count; i++)
+        foreach (var fresh in ToolDetector.DetectAll())
         {
-            var tool = config.Tools[i];
+            var existing = config.Tools.FindIndex(
+                t => t.Id.Equals(fresh.Id, StringComparison.OrdinalIgnoreCase));
 
-            if (!tool.Detected || !detected.TryGetValue(tool.Id, out var fresh))
+            if (existing < 0)
             {
+                if (!config.Tools.Any(t => SamePath(t.Host, fresh.Host)))
+                {
+                    config.Tools.Add(fresh);
+                    changed = true;
+                }
+
                 continue;
             }
 
-            if (!fresh.Host.Equals(tool.Host, StringComparison.OrdinalIgnoreCase))
+            // Only entries Airlock found are re-probed; a hand-added one is taken literally, even
+            // when it shares an id with something detectable.
+            if (config.Tools[existing].Detected && !SamePath(config.Tools[existing].Host, fresh.Host))
             {
-                config.Tools[i] = fresh;
+                config.Tools[existing] = fresh;
                 changed = true;
             }
         }
@@ -109,6 +127,10 @@ public sealed class AirlockConfigStore(string? path = null)
 
         return changed;
     }
+
+    /// <summary>Two spellings of the same folder - a trailing separator is the usual difference.</summary>
+    private static bool SamePath(string a, string b) =>
+        a.TrimEnd('\\').Equals(b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>

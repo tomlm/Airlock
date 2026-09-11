@@ -366,6 +366,17 @@ public sealed class SandboxHost(
                 $"Provisioning failed{Where(step)}: {verdict.Trim()}" +
                 await FetchSetupLogAsync(sandboxId, cancellationToken).ConfigureAwait(false));
         }
+
+        // Not fatal - a sandbox that cannot resolve names is still a sandbox, and the machine may
+        // simply be offline. But it is worth saying out loud, because the failure it usually means
+        // is a firewall rule taking DNS down while raw IP traffic keeps working, which from inside
+        // the guest looks like anything but a firewall problem.
+        if (!verdict.Contains("\"dns\":true", StringComparison.OrdinalIgnoreCase))
+        {
+            progress?.Report((SandboxPhase.Provisioning,
+                "Warning: the sandbox could not resolve a domain name. Check the network rules, " +
+                "or 'blockLan' in airlock.json."));
+        }
     }
 
     /// <summary>The step the guest last reported, if it got far enough to report one.</summary>

@@ -91,6 +91,55 @@ public class AirlockConfigStoreTests : IDisposable
     }
 
     [Fact]
+    public void Refresh_PicksUpAToolThisConfigNeverKnewAbout()
+    {
+        // A config written before a detector existed would otherwise never benefit from it - which
+        // is what happened to dotnet-tools, leaving everyone already using Airlock to add it by
+        // hand.
+        var store = new AirlockConfigStore(_path);
+        var config = new AirlockConfig();
+
+        Assert.True(store.RefreshDetected(config));
+        Assert.NotEmpty(config.Tools);
+        Assert.Equal(config.Tools.Count, store.Load()!.Tools.Count);
+    }
+
+    [Fact]
+    public void Refresh_LeavesAnUpToDateConfigAlone()
+    {
+        var store = new AirlockConfigStore(_path);
+        var config = store.LoadOrCreate();
+
+        Assert.False(store.RefreshDetected(config));
+    }
+
+    [Fact]
+    public void AHandAddedToolKeepsItsName_RatherThanBeingMountedTwice()
+    {
+        // Adding a folder by hand and later teaching Airlock to detect it should not produce two
+        // mounts of the same files under two ids. A trailing separator is the usual spelling
+        // difference, since `tools add C:\...\tools\` is a natural thing to type.
+        var all = ToolDetector.DetectAll();
+        var detected = all.Count == 0 ? null : all[0];
+
+        if (detected is null)
+        {
+            return;
+        }
+
+        var store = new AirlockConfigStore(_path);
+        var config = new AirlockConfig
+        {
+            Tools = [new ToolDefinition("mine", detected.Host.TrimEnd('\\') + "\\")],
+        };
+
+        store.RefreshDetected(config);
+
+        Assert.Single(config.Tools, t => t.Id == "mine");
+        Assert.DoesNotContain(config.Tools, t => t.Id == detected.Id);
+    }
+
+    [Fact]
     public void TwoCheckoutsWithTheSameLeafName_GetDistinctFolders()
     {
         var config = new AirlockConfig { Airlocks = [new AirlockDefinition(@"S:\src\foo", "foo")] };
@@ -204,6 +253,48 @@ public class ToolDetectorTests
         finally
         {
             Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(decoy))!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DotnetTools_MountsTheFolderThatHoldsTheShimsAndTheirPayload()
+    {
+        var tools = ToolDetector.DetectDotnetTools();
+
+        if (tools is null)
+        {
+            return;
+        }
+
+        // A shim is an apphost that locates its dll relative to itself, so `.store` has to come
+        // along - mounting only the shims would give a folder full of executables that cannot run.
+        Assert.True(Directory.Exists(Path.Combine(tools.Host, ".store")));
+        Assert.NotEmpty(Directory.EnumerateFiles(tools.Host, "*.exe"));
+    }
+
+    [Fact]
+    public void AnEmptyToolsFolder_IsNotWorthMounting()
+    {
+        // An uninstall leaves the folder behind; mounting it would put an empty entry on PATH.
+        var home = Path.Combine(Path.GetTempPath(), "airlock-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(home, ".dotnet", "tools"));
+
+        var previous = Environment.GetEnvironmentVariable("DOTNET_CLI_HOME");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", home);
+
+            var found = ToolDetector.DetectDotnetTools();
+
+            Assert.True(
+                found is null || !found.Host.StartsWith(home, StringComparison.OrdinalIgnoreCase),
+                "an empty tools folder should be skipped");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DOTNET_CLI_HOME", previous);
+            Directory.Delete(home, recursive: true);
         }
     }
 

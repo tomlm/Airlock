@@ -174,8 +174,8 @@ public static class ProjectResolver
 
     /// <summary>
     /// Keeps the sandbox path predictable and free of characters that would need quoting in the
-    /// remote command. Projects share a root with Airlock's own mounts, which are wrapped in
-    /// underscores, so a name shaped like one of those gets nudged out of the way.
+    /// remote command. No name is reserved: airlocks live in a folder of their own, so one called
+    /// <c>tools</c> or <c>session</c> shadows nothing.
     /// </summary>
     private static string SanitiseName(string name)
     {
@@ -186,10 +186,7 @@ public static class ProjectResolver
             cleaned = "project";
         }
 
-        cleaned = cleaned.Length > 64 ? cleaned[..64] : cleaned;
-
-        // _tools_ and friends belong to Airlock; a project called that would shadow one.
-        return Airlock.Sandbox.SandboxPaths.IsReservedName(cleaned) ? cleaned.Trim('_') : cleaned;
+        return cleaned.Length > 64 ? cleaned[..64] : cleaned;
     }
 
     private static bool IsUnder(string path, string parent) =>

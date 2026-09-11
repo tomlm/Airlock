@@ -15,8 +15,11 @@ public static class ToolDetector
     /// <summary>Everything found on this machine, in a stable order.</summary>
     public static IReadOnlyList<ToolDefinition> DetectAll() =>
     [
-        .. new[] { DetectDotnet(), DetectNode(), DetectGit(), DetectPython(), DetectCoreutils() }
-            .OfType<ToolDefinition>(),
+        .. new[]
+        {
+            DetectDotnet(), DetectDotnetTools(), DetectNode(), DetectGit(), DetectPython(),
+            DetectCoreutils(),
+        }.OfType<ToolDefinition>(),
     ];
 
     /// <summary>
@@ -48,6 +51,45 @@ public static class ToolDetector
                     ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
                 });
     }
+
+    /// <summary>
+    /// The .NET global tools installed on the host, so `dotnet tool install -g` on this machine also
+    /// means the tool is on PATH in the sandbox.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The whole folder is mounted rather than the shims alone, because a shim is an apphost that
+    /// finds its payload relative to itself - <c>jsonpath.exe</c> carries the literal string
+    /// <c>.store\jsonpath-cli\1.0.0\...\JsonPath.dll</c> and no absolute path at all. Since
+    /// <c>.store</c> sits inside <c>tools</c>, mapping the parent keeps that relationship intact and
+    /// the shims resolve at whatever path the sandbox mounts them on. The runtime they then need
+    /// comes from <c>DOTNET_ROOT</c>, which <see cref="DetectDotnet"/> points at the mounted SDK.
+    /// </para>
+    /// <para>
+    /// Read-only is the one real limitation: <c>dotnet tool install -g</c> inside the sandbox writes
+    /// here and will fail. Installing on the host and restarting the sandbox is the way round it.
+    /// </para>
+    /// </remarks>
+    public static ToolDefinition? DetectDotnetTools()
+    {
+        var homes = new[]
+        {
+            Environment.GetEnvironmentVariable("DOTNET_CLI_HOME"),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        };
+
+        var found = homes
+            .Where(h => !string.IsNullOrEmpty(h))
+            .Select(h => System.IO.Path.Combine(h!, ".dotnet", "tools"))
+            .FirstOrDefault(HasAnyExecutable);
+
+        return found is null ? null : new ToolDefinition("dotnet-tools", found, Detected: true);
+    }
+
+    /// <summary>An empty tools folder is left behind by an uninstall, and is not worth mounting.</summary>
+    private static bool HasAnyExecutable(string folder) =>
+        Directory.Exists(folder) &&
+        Directory.EnumerateFiles(folder, "*.exe").Any();
 
     public static ToolDefinition? DetectNode()
     {

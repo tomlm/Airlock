@@ -10,7 +10,7 @@ cd S:\src\MyProject
 airlock open claude           # opens this project as an airlock, starts Claude in it
 ```
 
-The agent runs in a window you can see, in `C:\airlock\MyProject`. The desktop is right there for
+The agent runs in a window you can see, in `A:\MyProject`. The desktop is right there for
 the things a terminal cannot do — a browser sign-in, a UI test, a visual build. `airlock stop`
 destroys the VM and everything installed in it.
 
@@ -30,12 +30,18 @@ That is the whole model.
 
 | | Mounted | Where |
 |---|---|---|
-| **tools** | read-only, and put on PATH | `C:\airlock\_tools_\<id>` |
-| **airlocks** | read-write | `C:\airlock\<name>` |
+| **tools** | read-only, and put on PATH | `C:\tools\<id>` |
+| **airlocks** | read-write | `A:\<name>` |
 
-Airlocks sit directly under `C:\airlock`, so the path inside reads like the one outside:
-`S:\github\foo` becomes `C:\airlock\foo`. Airlock's own folders share that root and are wrapped in
-underscores — `_tools_`, `_session_`, `_out_` — to stay out of the way of anything you open.
+Every airlock is on **`A:`** — one letter and a name, which keeps working paths well clear of
+MAX_PATH once a build starts nesting. `S:\github\foo` becomes `A:\foo`. The drive is substituted
+onto `C:\airlocks` while the sandbox provisions, so `A:\foo` and `C:\airlocks\foo` are the same
+folder; the short spelling is the one to use, though a tool that resolves paths for itself will
+report the long one.
+
+Airlock's other folders are top-level too — `C:\tools`, `C:\session`, `C:\out`, `C:\setup`. There
+is no tidiness to protect in a machine that is thrown away, and giving the airlocks a folder of their
+own means no name is reserved: a repo called `tools` is just `A:\tools`.
 
 The sandbox's own `C:` is writable but ephemeral: installs, caches and scratch files vanish with it.
 
@@ -60,7 +66,7 @@ window on screen, so that stays something you ask for with `airlock start`.
 
 In a folder that is not yet an airlock, `open` creates one, so a new checkout is one command rather
 than two. In a folder *inside* an existing airlock it does not — that folder is already in the
-sandbox, so it simply opens there: from `S:\srcoo	ests` you land in `C:irlockoo	ests`.
+sandbox, so it simply opens there: from `S:\src\foo\tests` you land in `A:\foo\tests`.
 
 Options belong to Airlock only *before* the verb, so `airlock open claude --resume` forwards
 `--resume` to Claude while `airlock --dry-run open claude` is Airlock's own flag. Because the command
@@ -90,6 +96,7 @@ be edited by hand.
     { "id": "dotnet", "host": "C:\\Program Files\\dotnet", "detected": true,
       "env": { "DOTNET_ROOT": "{mount}" } },
     { "id": "git", "host": "C:\\Program Files\\Git", "detected": true, "path": ["cmd"] },
+    { "id": "dotnet-tools", "host": "C:\\Users\\you\\.dotnet\\tools", "detected": true },
     { "id": "coreutils", "host": "C:\\Program Files\\coreutils\\bin", "detected": true },
     { "id": "mytools", "host": "S:\\bin\\mytools" }
   ],
@@ -99,13 +106,23 @@ be edited by hand.
 ```
 
 `path` lists subfolders of the mount to put on PATH (omitted means the mount root). `{mount}` in
-`env` expands to the tool's path inside the sandbox. `detected` tools are re-probed at every start,
-so a moved or upgraded toolchain repairs itself; hand-added ones are taken literally.
+`env` expands to the tool's path inside the sandbox. `detected` tools are re-probed by
+`airlock tools refresh`, so a moved or upgraded toolchain repairs itself and a newly installed one is
+picked up; hand-added ones are taken literally.
 
-Detected out of the box: .NET, Node, Git, Python, and
+Detected out of the box: .NET, your .NET global tools, Node, Git, Python, and
 [Coreutils for Windows](https://github.com/microsoft/coreutils) if you have it
 (`winget install Microsoft.Coreutils`), which puts `ls`, `cat`, `head` and the rest on the sandbox's
 PATH.
+
+`dotnet-tools` means anything installed with `dotnet tool install -g` on the host is on PATH in the
+sandbox too. The whole `.dotnet\tools` folder is mounted rather than just the shims, because a shim
+is an apphost that finds its payload relative to itself, in the `.store` folder beside it. It is
+read-only like every other tool, so `dotnet tool install -g` *inside* the sandbox will fail - install
+on the host and restart the sandbox instead.
+
+Changing tools takes effect the next time the sandbox starts. Unlike an airlock, which `open` can
+share into a running sandbox, a tool's mount and its PATH entry are both fixed at boot.
 
 `secrets` lists **names**, never values. They are read from your host environment at start and handed
 to the guest through a file that both sides delete, so a credential is never written into config and
@@ -119,8 +136,10 @@ Worth stating plainly, because it is easy to assume otherwise:
   the same time, by design — it is one configured machine with several workspaces. An agent working
   in one can read and write the others. Keep projects apart by not opening them together.
 - **The network is not a jail.** The sandbox has full internet access. Airlock adds in-guest firewall
-  rules blocking private ranges, but the guest is an administrator and can remove them. That is
-  protection against accident, not against a determined agent.
+  rules blocking private ranges, so the agent cannot reach your NAS or router — but the guest
+  keeps its own NAT segment, gateway and DNS, or it would not be a working machine, and the guest
+  is an administrator and can remove the rules. That is protection against accident, not against a
+  determined agent.
 - **Agents can rewrite your git history.** Airlocks are mounted read-write, `.git` included.
 - **Read-only means read.** Everything mounted as a tool is fully readable by whatever runs in the
   sandbox. Do not mount anything you would not hand over.
