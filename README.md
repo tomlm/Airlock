@@ -160,8 +160,8 @@ everything you open shares it.
 ## Building
 
 ```powershell
-dotnet build Airlock.slnx
-dotnet test  Airlock.slnx
+dotnet build src\Airlock.slnx
+dotnet test  src\Airlock.slnx
 dotnet pack  src\Airlock -c Release
 ```
 

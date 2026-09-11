@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="Airlock/Airlock.csproj" />
+    <Project Path="Airlock.Core/Airlock.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="../tests/Airlock.Core.Tests/Airlock.Core.Tests.csproj" />
+  </Folder>
+</Solution>
