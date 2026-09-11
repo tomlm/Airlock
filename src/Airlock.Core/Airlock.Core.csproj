@@ -3,6 +3,7 @@
   <PropertyGroup>
     <RootNamespace>Airlock</RootNamespace>
     <AssemblyName>Airlock.Core</AssemblyName>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
