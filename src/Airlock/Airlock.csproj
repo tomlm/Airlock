@@ -12,13 +12,11 @@
     <Company>Iciclecreek</Company>
     <Authors>Tom Laird-McConnell</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/tomlm/Airlock.Cli</PackageProjectUrl>
-    <PackageIconUrl>https://raw.githubusercontent.com/tomlm/Airlock.Cli/master/icon.png</PackageIconUrl>
+    <PackageProjectUrl>https://github.com/tomlm/Airlock</PackageProjectUrl>
     <PackageIcon>icon.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>windows-sandbox;sandbox;ai;agent;claude;isolation;cli</PackageTags>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <RepositoryUrl>https://github.com/tomlm/Airlock.Cli</RepositoryUrl>
     <Copyright>Tom Laird-McConnell All Rights Reserved</Copyright>
     <RootNamespace>Airlock</RootNamespace>
     <ContentTargetFolders>content</ContentTargetFolders>
@@ -32,14 +30,12 @@
     <RollForward>latestMajor</RollForward>
   </PropertyGroup>
 
-  <ItemGroup>
-    <None Include="../../README.md" Pack="true" PackagePath="" />
-    <None Include="../../icon.png" Pack="true" PackagePath="" />
-  </ItemGroup>
-
-
+  <!-- Each file goes in exactly once. Listing README.md twice - as "" and as "\", which are the
+       same package root - put two copies in the .nupkg, and nuget.org rejects that with
+       "The package contains one or more duplicated files in the same folder." -->
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\icon.png" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>
